@@ -24,6 +24,7 @@ Current plugin version: **0.1.0**
 - On merge acceptance, the actual local reader position is pushed under the local document ID, avoiding reuse of an XPointer from a potentially different EPUB edition.
 - Built-in GitHub update checks support one automatic check per KOReader session, manual checks from the Deluxe-Sync menu, per-version skip persistence, safe staged replacement, and a restart prompt after installation.
 - A Credits page shows the installed plugin version, project acknowledgements, and clickable project/support links.
+- Optional account-recovery support for enhanced KOSync servers: users can store an email with a server profile, request a time-limited recovery code, reset the KOSync password from the plugin, and have the new credential verified before it is saved. Standard KOSync servers remain fully compatible and simply report recovery as unsupported.
 
 ## Compatibility targets used during development
 

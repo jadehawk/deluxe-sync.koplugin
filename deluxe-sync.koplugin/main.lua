@@ -1797,6 +1797,7 @@ function ProgressSyncDeluxe:addServerDialog(existing)
         local url = util.trim(values[2] or "")
         local username = util.trim(values[3] or "")
         local password = values[4] or ""
+        local email = util.trim(values[5] or "")
         if url == "" or username == "" or (require_password and password == "" and not existing.userkey) then
             UIManager:show(InfoMessage:new{
                 text = _("Server URL, username, and password are required."),
@@ -1818,10 +1819,26 @@ function ProgressSyncDeluxe:addServerDialog(existing)
             name = name ~= "" and name or url,
             url = url,
             username = username,
+            email = email ~= "" and email or nil,
             userkey = key,
             enabled = existing.enabled ~= false,
             metadata_enabled = metadata_enabled,
             capabilities = capabilities,
+        }
+    end
+
+    local function collectRecoverySeed()
+        local values = dialog:getFields()
+        return {
+            id = existing.id,
+            name = util.trim(values[1] or ""),
+            url = util.trim(values[2] or ""),
+            username = util.trim(values[3] or ""),
+            email = util.trim(values[5] or ""),
+            userkey = existing.userkey,
+            enabled = existing.enabled ~= false,
+            metadata_enabled = check_button_metadata.checked,
+            capabilities = existing.capabilities,
         }
     end
 
@@ -1868,8 +1885,19 @@ function ProgressSyncDeluxe:addServerDialog(existing)
             { text = existing.url or "", hint = _("Server URL") },
             { text = existing.username or "", hint = _("Username") },
             { text = "", hint = existing.userkey and _("Password (leave blank to keep current)") or _("Password"), text_type = "password" },
+            { text = existing.email or "", hint = _("Email (optional, for account recovery)") },
         },
-        buttons = { buttons },
+        buttons = {
+            buttons,
+            {{
+                text = _("Recovery"),
+                callback = function()
+                    local seed = collectRecoverySeed()
+                    UIManager:close(dialog)
+                    self:showRecoveryDialog(seed)
+                end,
+            }},
+        },
     }
     check_button_metadata = CheckButton:new{
         text = _("Enable Metadata"),
@@ -1877,6 +1905,132 @@ function ProgressSyncDeluxe:addServerDialog(existing)
         parent = dialog,
     }
     dialog:addWidget(check_button_metadata)
+    suppressDialogContainerHolds(dialog)
+    UIManager:show(dialog)
+    dialog:onShowKeyboard()
+end
+
+function ProgressSyncDeluxe:showRecoveryDialog(existing)
+    existing = existing or {}
+    local dialog
+
+    local function collect(require_reset)
+        local values = dialog:getFields()
+        local data = {
+            name = util.trim(values[1] or ""),
+            url = util.trim(values[2] or ""),
+            username = util.trim(values[3] or ""),
+            email = util.trim(values[4] or ""),
+            code = util.trim(values[5] or ""),
+            password = values[6] or "",
+            password_confirm = values[7] or "",
+        }
+        if data.url == "" or data.username == "" or data.email == "" then
+            UIManager:show(InfoMessage:new{ text = _("Server URL, username, and email are required for account recovery.") })
+            return
+        end
+        if require_reset then
+            if data.code == "" or data.password == "" or data.password_confirm == "" then
+                UIManager:show(InfoMessage:new{ text = _("Recovery code and both new password fields are required.") })
+                return
+            end
+            if data.password ~= data.password_confirm then
+                UIManager:show(InfoMessage:new{ text = _("The new passwords do not match.") })
+                return
+            end
+        end
+        return data
+    end
+
+    local function unsupported()
+        UIManager:show(InfoMessage:new{ text = _("This server does not support Deluxe-Sync account recovery.") })
+    end
+
+    local function requestCode()
+        local data = collect(false)
+        if not data then return end
+        DiagnosticLog.log("recovery UI request code", data.url, "username", data.username, "email", data.email)
+        local client = self:newClient({ url = data.url })
+        local cap_ok, cap_status, cap_body = client:recoveryCapability()
+        local cap_data = decode(cap_body)
+        DiagnosticLog.log("recovery capability result", data.url, "status", cap_status or "nil", "body", cap_body or "")
+        if not cap_ok or cap_status ~= 200 or (type(cap_data) == "table" and cap_data.supported == false) then
+            return unsupported()
+        end
+        local ok, status, body = client:requestRecovery(data.username, data.email)
+        DiagnosticLog.log("recovery request result", data.url, "status", status or "nil", "body", body or "")
+        if ok and (status == 200 or status == 202) then
+            UIManager:show(InfoMessage:new{
+                text = _("If the account details are valid, a time-limited recovery code has been sent to the supplied email address."),
+            })
+            return
+        end
+        if status == 404 or status == 405 then return unsupported() end
+        UIManager:show(InfoMessage:new{ text = serverResponseMessage(body) or _("The server could not start account recovery.") })
+    end
+
+    local function confirmReset()
+        local data = collect(true)
+        if not data then return end
+        local new_key = userkey(data.password)
+        DiagnosticLog.log("recovery UI confirm", data.url, "username", data.username, "email", data.email, "code_length", #data.code, "new_userkey", "<redacted>")
+        local client = self:newClient({ url = data.url })
+        local ok, status, body = client:confirmRecovery(data.username, data.email, data.code, new_key)
+        DiagnosticLog.log("recovery confirm result", data.url, "status", status or "nil", "body_length", #tostring(body or ""))
+        if not ok or (status ~= 200 and status ~= 204) then
+            if status == 404 or status == 405 then return unsupported() end
+            UIManager:show(InfoMessage:new{ text = serverResponseMessage(body) or _("The recovery code was not accepted or has expired.") })
+            return
+        end
+
+        local auth_ok, auth_status, auth_body = client:authorize(data.username, new_key)
+        DiagnosticLog.log("recovery post-reset authorize", data.url, "username", data.username, "status", auth_status or "nil")
+        if not auth_ok then
+            UIManager:show(InfoMessage:new{ text = serverResponseMessage(auth_body) or _("The password was reset, but the new credentials could not be verified. Please try signing in manually.") })
+            return
+        end
+
+        local capabilities = existing.capabilities or {}
+        capabilities.account_recovery = true
+        local server = {
+            id = existing.id,
+            name = data.name ~= "" and data.name or data.url,
+            url = data.url,
+            username = data.username,
+            email = data.email,
+            userkey = new_key,
+            enabled = existing.enabled ~= false,
+            metadata_enabled = existing.metadata_enabled ~= false,
+            capabilities = capabilities,
+        }
+        local saved = self.store:upsertServer(server)
+        UIManager:close(dialog)
+        UIManager:show(InfoMessage:new{ text = _("Password reset completed and the new credentials were verified."), timeout = 3 })
+        self:testServer(saved)
+    end
+
+    dialog = MultiInputDialog:new{
+        title = _("Deluxe-Sync — Account Recovery"),
+        fields = {
+            { text = existing.name or "", hint = _("Server name") },
+            { text = existing.url or "", hint = _("Server URL") },
+            { text = existing.username or "", hint = _("Username") },
+            { text = existing.email or "", hint = _("Email") },
+            { text = "", hint = _("Recovery code") },
+            { text = "", hint = _("New password"), text_type = "password" },
+            { text = "", hint = _("Confirm new password"), text_type = "password" },
+        },
+        buttons = {
+            {
+                { text = _("Cancel"), callback = function()
+                    UIManager:close(dialog)
+                    if existing.id then self:showServer(self.store:getServer(existing.id) or existing) else self:addServerDialog(existing) end
+                end },
+                { text = _("Request Recovery Code"), callback = requestCode },
+            },
+            {{ text = _("Reset Password & Sign In"), is_enter_default = true, callback = confirmReset }},
+        },
+    }
     suppressDialogContainerHolds(dialog)
     UIManager:show(dialog)
     dialog:onShowKeyboard()
@@ -1955,6 +2109,15 @@ function ProgressSyncDeluxe:testServer(server)
         self:showServerFailureDialog(server, _("SIGN-IN FAILED"), message, status)
         return
     end
+    local recovery_ok, recovery_status, recovery_body = client:recoveryCapability()
+    local recovery_data = decode(recovery_body)
+    local recovery_supported = recovery_ok and recovery_status == 200 and not (type(recovery_data) == "table" and recovery_data.supported == false)
+    self.store:setCapability(server.id, "account_recovery", recovery_supported)
+    DiagnosticLog.log("recovery capability test", server.url or "", "status", recovery_status or "nil", "supported", recovery_supported, "body", recovery_body or "")
+    if recovery_supported and server.email and server.email ~= "" then
+        local email_ok, email_status, email_body = client:setRecoveryEmail(server.username, server.userkey, server.email)
+        DiagnosticLog.log("recovery email enrollment result", server.url or "", "username", server.username or "", "email", server.email, "status", email_status or "nil", "ok", email_ok, "body", email_body or "")
+    end
     client:listDocuments(server.username, server.userkey, function(list_ok, list_status, body)
         local data = decode(body)
         if list_ok and list_status == 200 and data and type(data.documents) == "table" then
@@ -1971,11 +2134,14 @@ end
 function ProgressSyncDeluxe:showServer(server)
     local caps = server.capabilities or {}
     local listing = caps.document_listing == true and _("Supported") or (caps.document_listing == false and _("Not supported") or _("Unknown"))
+    local recovery = caps.account_recovery == true and _("Supported") or (caps.account_recovery == false and _("Not supported") or _("Unknown"))
     local buttons = {
         {{ text = T(_("Enabled: %1"), server.enabled ~= false and _("Yes") or _("No")), callback = function() self.store:setServerEnabled(server.id, server.enabled == false); UIManager:close(self.server_dialog); self:showServer(self.store:getServer(server.id)) end }},
         {{ text = T(_("Remote library: %1"), listing), enabled = false }},
+        {{ text = T(_("Account recovery: %1"), recovery), enabled = false }},
         {{ text = _("Refresh / test capabilities"), callback = function() UIManager:close(self.server_dialog); self:testServer(server) end }},
         {{ text = _("Browse tracked books"), callback = function() UIManager:close(self.server_dialog); self:refreshServerLibrary(server) end }},
+        {{ text = _("Recovery"), callback = function() UIManager:close(self.server_dialog); self:showRecoveryDialog(server) end }},
         {{ text = _("Edit server"), callback = function() UIManager:close(self.server_dialog); self:addServerDialog(server) end }},
         {{ text = _("Delete server"), callback = function()
             local confirm_dialog

@@ -87,13 +87,14 @@ end
 
 function ServerStore:upsertServer(server)
     server.id = server.id or makeId(server.name, server.url, server.username)
-    DiagnosticLog.log("server upsert", server.name or "", server.url or "", server.username or "", "enabled", server.enabled ~= false)
+    DiagnosticLog.log("server upsert", server.name or "", server.url or "", server.username or "", "email", server.email or "", "enabled", server.enabled ~= false)
     server.enabled = server.enabled ~= false
     server.metadata_enabled = server.metadata_enabled ~= false
     server.capabilities = server.capabilities or {
         metadata_compatible = nil,
         metadata_retained = nil,
         document_listing = nil,
+        account_recovery = nil,
     }
     for i, existing in ipairs(self.data.servers) do
         if existing.id == server.id then

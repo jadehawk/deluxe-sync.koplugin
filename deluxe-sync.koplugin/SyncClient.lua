@@ -100,6 +100,87 @@ function SyncClient:authorize(username, userkey)
     return res.status == 200, res.status, res.body
 end
 
+function SyncClient:_publicCall(method, params)
+    self.client:reset_middlewares()
+    self.client:enable("Format.JSON")
+    self.client:enable("PSDGinClient")
+    socketutil:set_timeout(AUTH_TIMEOUTS[1], AUTH_TIMEOUTS[2])
+    local ok, res = pcall(function()
+        return self.client[method](self.client, params or {})
+    end)
+    socketutil:reset_timeout()
+    if not ok then
+        if type(res) == "table" and type(res.response) == "table" then
+            local response_body = res.response.body or res.reason or ""
+            if method == "recovery_confirm" then
+                DiagnosticLog.log("public request failure", method, self.custom_url or "", "status", res.response.status or "nil", "body_length", #tostring(response_body))
+            else
+                DiagnosticLog.log("public request failure", method, self.custom_url or "", "status", res.response.status or "nil", "body", response_body)
+            end
+            return false, res.response.status, response_body
+        end
+        if method == "recovery_confirm" then
+            DiagnosticLog.log("public request failure", method, self.custom_url or "", "error", "<redacted-sensitive-error>")
+        else
+            DiagnosticLog.log("public request failure", method, self.custom_url or "", "error", tostring(res))
+        end
+        return false, nil, res
+    end
+    if method == "recovery_confirm" then
+        DiagnosticLog.log("public request response", method, self.custom_url or "", "status", res.status, "body_length", #tostring(res.body or ""))
+    else
+        DiagnosticLog.log("public request response", method, self.custom_url or "", "status", res.status, "body", res.body)
+    end
+    return true, res.status, res.body
+end
+
+function SyncClient:recoveryCapability()
+    DiagnosticLog.log("recovery capability request", self.custom_url or "")
+    return self:_publicCall("recovery_capability", {})
+end
+
+function SyncClient:setRecoveryEmail(username, userkey, email)
+    DiagnosticLog.log("recovery email update", self.custom_url or "", "username", username or "", "email", email or "")
+    self:_setup(username, userkey)
+    socketutil:set_timeout(AUTH_TIMEOUTS[1], AUTH_TIMEOUTS[2])
+    local ok, res = pcall(function()
+        return self.client:recovery_email({ email = email })
+    end)
+    socketutil:reset_timeout()
+    if not ok then
+        if type(res) == "table" and type(res.response) == "table" then
+            DiagnosticLog.log("recovery email failure", self.custom_url or "", "status", res.response.status or "nil", "body", res.response.body or res.reason or "")
+            return false, res.response.status, res.response.body or res.reason
+        end
+        DiagnosticLog.log("recovery email failure", self.custom_url or "", "error", tostring(res))
+        return false, nil, res
+    end
+    DiagnosticLog.log("recovery email response", self.custom_url or "", "status", res.status, "body", res.body)
+    return res.status == 200 or res.status == 204, res.status, res.body
+end
+
+function SyncClient:requestRecovery(username, email)
+    DiagnosticLog.log("recovery code request", self.custom_url or "", "username", username or "", "email", email or "")
+    return self:_publicCall("recovery_request", { username = username, email = email })
+end
+
+function SyncClient:confirmRecovery(username, email, code, new_userkey)
+    DiagnosticLog.log(
+        "recovery confirm request",
+        self.custom_url or "",
+        "username", username or "",
+        "email", email or "",
+        "code_length", #(code or ""),
+        "new_userkey", "<redacted>"
+    )
+    return self:_publicCall("recovery_confirm", {
+        username = username,
+        email = email,
+        code = code,
+        new_userkey = new_userkey,
+    })
+end
+
 function SyncClient:_async(method, username, userkey, params, callback)
     self:_setup(username, userkey)
     DiagnosticLog.log("http request", method, self.custom_url or "", params or {})
