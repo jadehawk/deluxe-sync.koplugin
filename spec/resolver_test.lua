@@ -41,4 +41,26 @@ assert(percentage_direction == "newer", "percentage should be the fallback when 
 local _, same_direction = Resolver.chooseAutomatic({ results[3] }, "xp-b", 0.61, 0)
 assert(same_direction == "same", "matching progress must not trigger an automatic move")
 
+local bookorbit_reset = {
+    ok = true,
+    progress = "/body/DocFragment[1]/body",
+    percentage = 0,
+    timestamp = 200,
+    device = "web",
+    device_id = "bookorbit-web",
+    server = { name = "BookOrbit" },
+}
+local reset_groups = Resolver.group({ bookorbit_reset })
+assert(#reset_groups == 1, "BookOrbit reset must remain a valid remote progress group")
+assert(reset_groups[1].progress == "/body/DocFragment[1]/body", "BookOrbit reset must preserve its start XPointer")
+assert(reset_groups[1].percentage == 0, "BookOrbit reset must preserve zero percent")
+assert(reset_groups[1].servers[1].device_id == "bookorbit-web", "BookOrbit reset source identity must be preserved")
+
+local reset_group, reset_direction = Resolver.chooseAutomatic({ bookorbit_reset }, "local-xp", 0.72, 150)
+assert(reset_group == reset_groups[1] or reset_group.progress == reset_groups[1].progress, "automatic reset choice must select the reset group")
+assert(reset_direction == "newer", "newer BookOrbit reset timestamp must outrank its lower percentage")
+
+local _, reset_percentage_fallback = Resolver.chooseAutomatic({ bookorbit_reset }, "local-xp", 0.72, 0)
+assert(reset_percentage_fallback == "older", "without comparable local timing, BookOrbit reset must fall back to percentage ordering")
+
 print("resolver_test.lua: OK")

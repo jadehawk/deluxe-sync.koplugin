@@ -11,6 +11,7 @@ local ButtonTable = require("ui/widget/buttontable")
 local CenterContainer = require("ui/widget/container/centercontainer")
 local LeftContainer = require("ui/widget/container/leftcontainer")
 local FrameContainer = require("ui/widget/container/framecontainer")
+local InputContainer = require("ui/widget/container/inputcontainer")
 local GestureRange = require("ui/gesturerange")
 local IconWidget = require("ui/widget/iconwidget")
 local IconButton = require("ui/widget/iconbutton")
@@ -1976,11 +1977,18 @@ function ProgressSyncDeluxe:showServerDocumentInspection(server, doc, match, doc
         and T(_("%1 (%2)"), match.filename or _("book"), match.confidence or _("Unknown"))
         or _("Not found")
 
+    local title_face = Font:getFace("smallinfofontbold")
+    local book_title_face = Font:getFace("smallinfofontbold")
+    local detail_face = Font:getFace("x_smallinfofont")
+    local label_face = Font:getFace("smallinfofontbold")
+
     self.server_book_dialog = ButtonDialog:new{
-        title = _("Book Review"),
+        title = _("Deluxe-Sync"),
         title_align = "left",
+        title_face = title_face,
         width_factor = 0.98,
         use_info_style = false,
+        dismissable = false,
         buttons = {{
             {
                 text = _("Back to server book list"),
@@ -1994,76 +2002,165 @@ function ProgressSyncDeluxe:showServerDocumentInspection(server, doc, match, doc
 
     local available_width = self.server_book_dialog:getAddedWidgetAvailableWidth()
     local gap = math.max(8, math.floor(available_width * 0.025))
-    local left_width = math.floor(available_width * 0.48)
+    local left_width = math.floor(available_width * 0.39)
     local right_width = available_width - left_width - gap
-    local label_face = Font:getFace("smallinfofontbold")
-    local value_face = Font:getFace("smallinfofont")
-    local note_face = Font:getFace("x_smallinfofont")
-    local padding = math.max(7, Device.screen:scaleBySize(7))
+    local cover_max_width = math.max(80, left_width - 16)
+    local cover_max_height = math.floor(Device.screen:getHeight() * 0.30)
 
-    local function detailCard(width, heading, rows)
-        local content = VerticalGroup:new{ align = "left" }
-        table.insert(content, TextBoxWidget:new{
-            text = heading,
-            width = math.max(1, width - padding * 2),
-            face = label_face,
+    local left_column = VerticalGroup:new{ align = "center" }
+    local thumbnail
+    if match and match.path and self.ui.bookinfo then
+        local ok, cover = pcall(function()
+            return self.ui.bookinfo:getCoverImage(self.ui.document, match.path)
+        end)
+        if ok then thumbnail = cover end
+    end
+    if thumbnail then
+        local cover_width, cover_height = thumbnail:getWidth(), thumbnail:getHeight()
+        if cover_width > cover_max_width or cover_height > cover_max_height then
+            local scale = math.min(cover_max_width / cover_width, cover_max_height / cover_height)
+            cover_width = math.max(1, math.floor(cover_width * scale))
+            cover_height = math.max(1, math.floor(cover_height * scale))
+            thumbnail = RenderImage:scaleBlitBuffer(thumbnail, cover_width, cover_height, true)
+        end
+        table.insert(left_column, CenterContainer:new{
+            dimen = Geom:new{ w = left_width, h = cover_height },
+            ImageWidget:new{ image = thumbnail, width = cover_width, height = cover_height },
+        })
+    else
+        local placeholder_width = math.min(cover_max_width, math.floor(cover_max_height * 0.67))
+        local placeholder_height = math.min(cover_max_height, math.floor(placeholder_width / 0.67))
+        local placeholder_border = 1
+        local placeholder_padding = math.max(6, Device.screen:scaleBySize(6))
+        local placeholder_inner_width = math.max(1, placeholder_width - (placeholder_border + placeholder_padding) * 2)
+        local placeholder_inner_height = math.max(1, placeholder_height - (placeholder_border + placeholder_padding) * 2)
+        local placeholder_content = VerticalGroup:new{ align = "center" }
+        table.insert(placeholder_content, IconWidget:new{
+            icon = "resources/icons/mdlight/book.opened.svg",
+            width = math.max(32, math.floor(placeholder_width * 0.28)),
+            height = math.max(32, math.floor(placeholder_width * 0.28)),
+        })
+        table.insert(placeholder_content, VerticalSpan:new{ width = 8 })
+        table.insert(placeholder_content, TextBoxWidget:new{
+            text = _("Cover unavailable"),
+            width = math.max(40, placeholder_inner_width - 4),
+            face = detail_face,
             alignment = "center",
         })
-        table.insert(content, VerticalSpan:new{ width = 6 })
-        for _, row in ipairs(rows) do
-            table.insert(content, TextBoxWidget:new{
-                text = row[1],
-                width = math.max(1, width - padding * 2),
-                face = label_face,
-                alignment = "left",
-            })
-            table.insert(content, TextBoxWidget:new{
-                text = tostring(row[2] or ""),
-                width = math.max(1, width - padding * 2),
-                face = value_face,
-                alignment = "left",
-            })
-            table.insert(content, VerticalSpan:new{ width = 5 })
-        end
-        return FrameContainer:new{
-            width = width,
-            bordersize = 1,
-            radius = math.max(7, Device.screen:scaleBySize(7)),
-            padding = padding,
-            content,
-        }
+        table.insert(left_column, CenterContainer:new{
+            dimen = Geom:new{ w = left_width, h = placeholder_height },
+            FrameContainer:new{
+                bordersize = placeholder_border,
+                radius = math.max(4, Device.screen:scaleBySize(4)),
+                padding = placeholder_padding,
+                CenterContainer:new{
+                    dimen = Geom:new{ w = placeholder_inner_width, h = placeholder_inner_height },
+                    placeholder_content,
+                },
+            },
+        })
     end
 
-    local book_rows = {
-        { _("Title"), title },
-        { _("Author"), author },
-        { _("Filename"), filename },
-        { _("Local match"), local_status },
-        { _("Document ID"), tostring(doc.document or _("Unknown")) },
-    }
-    local server_rows = {
-        { _("Server"), serverLabel(server) },
-        { _("Last Sync"), stamp },
-        { _("Position"), doc.percentage ~= nil and formatPercent(doc.percentage) or _("Unknown") },
-        { _("Listing source"), authoritative and _("Live server response") or _("Cached server record") },
-    }
-
-    local body = VerticalGroup:new{ align = "left" }
-    table.insert(body, HorizontalGroup:new{
-        align = "top",
-        detailCard(left_width, _("BOOK INFORMATION"), book_rows),
-        HorizontalSpan:new{ width = gap },
-        detailCard(right_width, _("SERVER RECORD"), server_rows),
+    table.insert(left_column, VerticalSpan:new{ width = 3 })
+    table.insert(left_column, TextBoxWidget:new{
+        text = tostring(title),
+        width = left_width,
+        face = book_title_face,
+        line_height = 0.2,
+        alignment = "center",
     })
-    table.insert(body, VerticalSpan:new{ width = 10 })
-    table.insert(body, TextBoxWidget:new{
-        text = _("Inspection only. You are browsing this server record; no reading position or sync state will be changed."),
-        width = available_width,
-        face = note_face,
+    table.insert(left_column, TextBoxWidget:new{
+        text = tostring(author),
+        width = left_width,
+        face = detail_face,
+        line_height = 0.15,
+        alignment = "center",
+    })
+    table.insert(left_column, TextBoxWidget:new{
+        text = tostring(filename),
+        width = left_width,
+        face = detail_face,
+        line_height = 0.15,
+        alignment = "center",
+    })
+    table.insert(left_column, VerticalSpan:new{ width = 5 })
+    table.insert(left_column, TextBoxWidget:new{
+        text = _("LOCAL MATCH"),
+        width = left_width,
+        face = label_face,
+        alignment = "center",
+    })
+    table.insert(left_column, TextBoxWidget:new{
+        text = local_status,
+        width = left_width,
+        face = detail_face,
         alignment = "center",
     })
 
-    self.server_book_dialog:addWidget(body)
+    local right_column = VerticalGroup:new{}
+    table.insert(right_column, TextBoxWidget:new{
+        text = _("SERVER RECORD"),
+        width = right_width,
+        face = label_face,
+        alignment = "center",
+    })
+    table.insert(right_column, VerticalSpan:new{ width = 5 })
+
+    local remote_label_face = Font:getFace("smallinfofont", 16)
+    local remote_value_face = Font:getFace("smallinfofontbold", 16)
+    local remote_padding = math.max(6, Device.screen:scaleBySize(6))
+    local remote_inner_width = math.max(1, right_width - 2 - remote_padding * 2)
+    local remote_label_width = math.floor(remote_inner_width * 0.30)
+    local remote_value_width = math.max(1, remote_inner_width - remote_label_width)
+    local remote_rows = VerticalGroup:new{ align = "left" }
+    local function addRemoteRow(label, value)
+        table.insert(remote_rows, HorizontalGroup:new{
+            align = "center",
+            TextBoxWidget:new{
+                text = label .. ":",
+                width = remote_label_width,
+                face = remote_label_face,
+                alignment = "left",
+            },
+            TextBoxWidget:new{
+                text = tostring(value or ""),
+                width = remote_value_width,
+                face = remote_value_face,
+                alignment = "left",
+            },
+        })
+    end
+    addRemoteRow(_("Last Sync"), stamp)
+    addRemoteRow(_("Position"), doc.percentage ~= nil and formatPercent(doc.percentage) or _("Unknown"))
+    addRemoteRow(_("Server"), serverLabel(server))
+    addRemoteRow(_("Document ID"), tostring(doc.document or _("Unknown")))
+    addRemoteRow(_("Listing source"), authoritative and _("Live server response") or _("Cached server record"))
+
+    local remote_content = LeftContainer:new{
+        dimen = Geom:new{ w = remote_inner_width, h = remote_rows:getSize().h },
+        remote_rows,
+    }
+    table.insert(right_column, FrameContainer:new{
+        width = right_width,
+        bordersize = 1,
+        radius = math.max(6, Device.screen:scaleBySize(6)),
+        padding = remote_padding,
+        remote_content,
+    })
+    table.insert(right_column, VerticalSpan:new{ width = 10 })
+    table.insert(right_column, TextBoxWidget:new{
+        text = _("Inspection only. You are browsing this server record; no reading position or sync state will be changed."),
+        width = right_width,
+        face = detail_face,
+        alignment = "center",
+    })
+
+    self.server_book_dialog:addWidget(HorizontalGroup:new{
+        align = "top",
+        left_column,
+        HorizontalSpan:new{ width = gap },
+        right_column,
+    })
     suppressDialogContainerHolds(self.server_book_dialog)
     UIManager:show(self.server_book_dialog)
 end
@@ -2116,12 +2213,10 @@ function ProgressSyncDeluxe:showServerLibrary(server, documents, authoritative)
     local card_padding = math.max(8, Device.screen:scaleBySize(8))
     local icon_slot = math.max(46, math.floor(list_width * 0.13))
     local arrow_slot = math.max(52, math.floor(list_width * 0.12))
-    local badge_slot = math.max(72, math.floor(list_width * 0.16))
     local icon_size = math.max(26, Device.screen:scaleBySize(26))
     local chevron_size = math.max(22, Device.screen:scaleBySize(22))
     local title_face = Font:getFace("smallinfofontbold")
     local subtitle_face = Font:getFace("smallinfofont")
-    local badge_face = Font:getFace("x_smallinfofont")
 
     local with_metadata, without_metadata = {}, {}
     for row_index, entry in ipairs(rows) do
@@ -2134,7 +2229,7 @@ function ProgressSyncDeluxe:showServerLibrary(server, documents, authoritative)
         if rendered_count > 0 then table.insert(cards, VerticalSpan:new{ width = card_gap }) end
         rendered_count = rendered_count + 1
 
-        local current_trailing_slot = selected.has_metadata and arrow_slot or badge_slot
+        local current_trailing_slot = selected.has_metadata and arrow_slot or 0
         local current_text_width = math.max(80, list_width - icon_slot - current_trailing_slot - card_padding * 2)
         local subtitle = selected.has_metadata and (selected.author or _("Unknown author")) or _("Metadata Unavailable")
         local details = VerticalGroup:new{ align = "left" }
@@ -2164,19 +2259,7 @@ function ProgressSyncDeluxe:showServerLibrary(server, documents, authoritative)
                 },
             }
         else
-            trailing = CenterContainer:new{
-                dimen = Geom:new{ w = current_trailing_slot, h = card_height - card_padding * 2 },
-                FrameContainer:new{
-                    bordersize = 1,
-                    radius = math.max(5, Device.screen:scaleBySize(5)),
-                    padding = math.max(2, Device.screen:scaleBySize(2)),
-                    VerticalGroup:new{
-                        align = "center",
-                        TextWidget:new{ text = _("No"), face = badge_face, padding = 0 },
-                        TextWidget:new{ text = _("Metadata"), face = badge_face, padding = 0 },
-                    },
-                },
-            }
+            trailing = HorizontalSpan:new{ width = 0 }
         end
 
         local card = FrameContainer:new{
@@ -2185,7 +2268,6 @@ function ProgressSyncDeluxe:showServerLibrary(server, documents, authoritative)
             bordersize = 1,
             radius = math.max(8, Device.screen:scaleBySize(8)),
             padding = card_padding,
-            background = Blitbuffer.COLOR_LIGHT_GRAY,
             HorizontalGroup:new{
                 align = "center",
                 CenterContainer:new{
@@ -2205,22 +2287,24 @@ function ProgressSyncDeluxe:showServerLibrary(server, documents, authoritative)
             },
         }
 
-        if selected.has_metadata then
-            card.ges_events = {
-                TapCard = {
-                    GestureRange:new{
-                        ges = "tap",
-                        range = Geom:new{ x = 0, y = 0, w = list_width, h = card_height },
-                    },
+        local tappable_card = InputContainer:new{
+            dimen = Geom:new{ x = 0, y = 0, w = list_width, h = card_height },
+            card,
+        }
+        tappable_card.ges_events = {
+            TapCard = {
+                GestureRange:new{
+                    ges = "tap",
+                    range = tappable_card.dimen,
                 },
-            }
-            card.onTapCard = function()
-                UIManager:close(self.library_dialog)
-                self:showServerDocumentInspection(server, selected.item, selected.match, documents, authoritative)
-                return true
-            end
+            },
+        }
+        tappable_card.onTapCard = function()
+            UIManager:close(self.library_dialog)
+            self:showServerDocumentInspection(server, selected.item, selected.match, documents, authoritative)
+            return true
         end
-        table.insert(cards, card)
+        table.insert(cards, tappable_card)
     end
 
     for metadata_index, entry in ipairs(with_metadata) do addCard(entry) end
