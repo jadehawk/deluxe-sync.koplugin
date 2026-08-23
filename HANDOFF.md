@@ -6,7 +6,7 @@ Deluxe-Sync is a KOReader plugin that extends KOSync progress synchronization to
 
 Workspace: `C:\Users\Admin\Documents\Github Working Repos\deluxe-sync.koplugin`
 
-The repository is currently an initial working tree with no commits yet on `master`; source files and the packaged `dist/deluxe-sync.koplugin/` tree are presently untracked. Do not assume a clean Git baseline.
+A baseline checkpoint now exists on `master` as commit `4acad0a` (`Checkpoint Deluxe-Sync implementation and server library UI`). `.codegraph/` remains untracked and is not part of the product checkpoint.
 
 ## Current implemented capabilities
 
@@ -87,4 +87,8 @@ For this standalone Deluxe-Sync repository, preserve the same verification requi
 
 ## Resume point
 
-The current implementation includes the server-management polish, metadata control, explicit back-navigation, default-on Auto-Sync Documents, Sync Behavior, automatic queue draining, zero-server onboarding, grouped compact tracked-book browsing, and inspection-only single-server Book Review described above. Continue from emulator/manual UI validation of these flows and any follow-up fixes discovered there.
+The current implementation includes the server-management polish, metadata control, explicit back-navigation, default-on Auto-Sync Documents, Sync Behavior, automatic queue draining, zero-server onboarding, grouped compact tracked-book browsing, and inspection-only single-server Book Review described above.
+
+**Immediate unfinished UI work:** `Server Details → Browse tracked books` is functional but still needs visual cleanup. The current `No Metadata` badge/box on metadata-unavailable rows is still too large and should be made substantially more compact. The book row/card/button background fill also needs to be removed so rows use the clean unfilled/white appearance from the approved target design rather than a gray button-like background. Preserve the metadata-first ordering, centered `Metadata Unavailable (N)` divider, book icon/title/subtitle structure, bottom `Back to server details`, and inspection-only behavior while making those visual fixes.
+
+After changing this screen, synchronize `dist`, deploy to the emulator, and visually navigate the actual screen before considering the UI fix complete.
