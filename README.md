@@ -2,6 +2,8 @@
 
 Deluxe-Sync is a KOReader plugin that extends the built-in KOSync workflow to multiple independent KOReader-compatible servers.
 
+Current plugin version: **0.1.0**
+
 ## Implemented in this initial build
 
 - Multiple server profiles, each with its own URL, username, derived KOSync user key, enable/disable state, and detected capabilities.
@@ -20,6 +22,8 @@ Deluxe-Sync is a KOReader plugin that extends the built-in KOSync workflow to mu
 - Safe progress preview: save the exact local position, jump to the remote percentage, suppress Deluxe-Sync syncing while previewing, inspect/adjust with the normal reader, then either restore the original position or accept the current local position.
 - Merge aliases: when a remote document record is accepted as the same book as the current local file, the remote document ID is retained as an alias of the local canonical document ID.
 - On merge acceptance, the actual local reader position is pushed under the local document ID, avoiding reuse of an XPointer from a potentially different EPUB edition.
+- Built-in GitHub update checks support one automatic check per KOReader session, manual checks from the Deluxe-Sync menu, per-version skip persistence, safe staged replacement, and a restart prompt after installation.
+- A Credits page shows the installed plugin version, project acknowledgements, and clickable project/support links.
 
 ## Compatibility targets used during development
 
@@ -32,7 +36,13 @@ All plugin-owned runtime state is kept under KOReader's `settings/deluxe-sync/` 
 
 ## Installation
 
-Copy this directory as `deluxe-sync.koplugin` into KOReader's `plugins` directory and restart KOReader. Open a book, then use **Deluxe-Sync** from the reader menu.
+1. Download the latest `deluxe-sync.koplugin.zip` from GitHub Releases.
+2. Extract the ZIP.
+3. Copy the entire `deluxe-sync.koplugin` folder to KOReader's `plugins` folder.
+4. Restart KOReader.
+5. Open a book, then use **Deluxe-Sync** from the reader menu.
+
+After the initial installation, future releases can be installed directly from **Deluxe-Sync → Check for Updates**.
 
 ## Preview / merge workflow
 
@@ -54,3 +64,7 @@ New user-facing strings should be routed through `I18N.translate` (the local `_(
 ## UI status
 
 The synchronization engine, local-library matching, and preview/merge flow are implemented. Server-library browsing is intentionally inspection-only and uses KOReader-native compact cards grouped by metadata availability, with a two-column single-server Book Review for record inspection.
+
+## Development
+
+The repository contains the installable KOReader plugin in `deluxe-sync.koplugin/` together with its Lua tests under `deluxe-sync.koplugin/spec/`. The compatibility target is Lua 5.1 / LuaJIT as used by KOReader.

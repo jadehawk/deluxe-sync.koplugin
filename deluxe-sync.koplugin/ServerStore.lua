@@ -52,6 +52,21 @@ function ServerStore:flush()
     self.settings_obj:flush()
 end
 
+function ServerStore:getSkippedUpdateVersion()
+    local version = self.data.settings.skipped_update_version
+    if type(version) ~= "string" or version == "" then return nil end
+    return version
+end
+
+function ServerStore:setSkippedUpdateVersion(version)
+    if version ~= nil and (type(version) ~= "string" or version == "") then
+        return nil, "Skipped update version must be a non-empty string"
+    end
+    self.data.settings.skipped_update_version = version
+    self:flush()
+    return true
+end
+
 function ServerStore:listServers()
     return self.data.servers
 end

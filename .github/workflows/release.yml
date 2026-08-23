@@ -1,0 +1,85 @@
+name: Release Deluxe-Sync KOReader Plugin
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: deluxe-sync-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read and validate plugin version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(awk -F'"' '/^[[:space:]]*version[[:space:]]*=/ { print $2; exit }' deluxe-sync.koplugin/_meta.lua)
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Plugin version in _meta.lua must be a semantic version (x.y.z); got: $version" >&2
+            exit 1
+          fi
+          tag="v${version}"
+          if [[ "${{ github.event_name }}" == "push" && "${GITHUB_REF_NAME}" != "$tag" ]]; then
+            echo "Pushed tag must match plugin version; pushed=${GITHUB_REF_NAME} expected=${tag}" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Synchronize README version
+        shell: bash
+        run: python .github/scripts/sync_readme_version.py
+
+      - name: Install Lua 5.1
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y lua5.1
+
+      - name: Validate plugin Lua syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          find deluxe-sync.koplugin -maxdepth 1 -type f -name '*.lua' -print0 | sort -z | xargs -0 -n1 /usr/bin/luac5.1 -p
+
+      - name: Validate plugin package
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f deluxe-sync.koplugin/_meta.lua
+          test -f deluxe-sync.koplugin/main.lua
+          test -f deluxe-sync.koplugin/deluxe_sync_updater.lua
+
+      - name: Build plugin archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          zip -qr deluxe-sync.koplugin.zip README.md deluxe-sync.koplugin
+          unzip -Z1 deluxe-sync.koplugin.zip | grep -Fxq "README.md"
+          unzip -Z1 deluxe-sync.koplugin.zip | grep -Fxq "deluxe-sync.koplugin/main.lua"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ steps.version.outputs.tag }}"
+          gh release create "$tag" deluxe-sync.koplugin.zip \
+            --title "$tag" \
+            --generate-notes

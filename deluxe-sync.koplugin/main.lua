@@ -39,6 +39,7 @@ local ProgressWidget = require("ui/widget/progresswidget")
 local RenderImage = require("ui/renderimage")
 local TextBoxWidget = require("ui/widget/textboxwidget")
 local TextWidget = require("ui/widget/textwidget")
+local TextViewer = require("ui/widget/textviewer")
 local UIManager = require("ui/uimanager")
 local VerticalGroup = require("ui/widget/verticalgroup")
 local VerticalSpan = require("ui/widget/verticalspan")
@@ -51,6 +52,11 @@ local json = require("json")
 local logger = require("logger")
 local util = require("util")
 
+local source_path = (debug.getinfo(1, "S").source or ""):gsub("^@", "")
+local plugin_root = source_path:match("^(.*)[/\\]main%.lua$") or "."
+local PluginMeta = dofile(plugin_root .. "/_meta.lua")
+local PLUGIN_VERSION = assert(PluginMeta.version, "Missing plugin version in _meta.lua")
+
 local DiagnosticLog
 local SyncClient
 local SyncQueue
@@ -61,6 +67,7 @@ local LocalLibrary
 local ProgressSyncDeluxe = WidgetContainer:extend{
     name = "progresssyncdeluxe",
     is_doc_only = true,
+    PLUGIN_VERSION = PLUGIN_VERSION,
 }
 
 local function insertAfterProgressSync(order)
@@ -162,7 +169,7 @@ function ProgressSyncDeluxe:init()
     self.ui.menu:registerToMainMenu(self)
 
     local ok, err = pcall(function()
-        self.path = debug.getinfo(1, "S").source:match("^@(.+)/main%.lua$") or "."
+        self.path = plugin_root
         package.path = self.path .. "/?.lua;" .. package.path
         DiagnosticLog = require("DiagnosticLog")
         DiagnosticLog.log("plugin init", "start")
@@ -219,6 +226,55 @@ function ProgressSyncDeluxe:showServerOnboarding()
     }
     suppressDialogContainerHolds(dialog)
     UIManager:show(dialog)
+end
+
+function ProgressSyncDeluxe:showCredits()
+    local credits = "# Deluxe-Sync for KOReader\n\n"
+        .. "Version **" .. PLUGIN_VERSION .. "**\n\n"
+        .. "A multi-server KOSync companion for KOReader, built to synchronize reading progress across independent KOReader-compatible servers while keeping conflict review and server inspection reader-friendly.\n\n"
+        .. "## With appreciation\n\n"
+        .. "Deluxe-Sync builds on the open-source KOReader ecosystem and the KOSync protocol implemented by KOReader's built-in Progress Sync plugin.\n\n"
+        .. "- [KOReader](https://github.com/koreader/koreader) — the reader, plugin platform, widgets, network APIs, and KOSync implementation that make Deluxe-Sync possible.\n"
+        .. "- [BookOrbit](https://github.com/bookorbit/bookorbit) — a KOReader-compatible sync server used while validating interoperability, metadata-aware synchronization, and server-library behavior.\n\n"
+        .. "Many thanks to the authors and contributors who make these projects available to the community.\n\n"
+        .. "## Links & Support\n\n"
+        .. "- [Techy Notes](https://techy-notes.com) — blog, projects, notes, and guides.\n"
+        .. "- [Jadehawk on YouTube](https://youtube.com/@jadehawk) — project videos and tutorials.\n"
+        .. "- [Buy Me a Coffee](https://buymeacoffee.com/jadehawk) — if you would like to support my projects.\n"
+        .. "- [Deluxe-Sync on GitHub](https://github.com/jadehawk/deluxe-sync.koplugin) — source code, releases, and issue tracking.\n\n"
+        .. "Deluxe-Sync is an independent personal project and is not affiliated with KOReader, BookOrbit, or the services listed above."
+
+    local viewer = TextViewer:new{
+        title = _("Credits"),
+        text = credits,
+        text_format = "md",
+        justified = false,
+        add_default_buttons = true,
+    }
+    if viewer.box_widget then
+        local box_widget = viewer.box_widget
+        box_widget.html_link_tapped_callback = function(link)
+            local uri = link and (link.uri or link.link or link.href)
+            if type(uri) ~= "string" or not uri:match("^https?://") then return end
+            if type(Device.canOpenLink) == "function" and Device:canOpenLink() then
+                Device:openLink(uri)
+            else
+                UIManager:show(InfoMessage:new{
+                    text = _("Open this link on another device:") .. "\n\n" .. uri,
+                })
+            end
+        end
+        box_widget.onTapText = function(widget, _arg, ges)
+            local pos = widget:getPosFromAbsPos(ges.pos)
+            if not pos then return end
+            local link = widget:getLinkByPosition(pos)
+            if link then
+                widget.html_link_tapped_callback(link)
+                return true
+            end
+        end
+    end
+    UIManager:show(viewer)
 end
 
 function ProgressSyncDeluxe:addToMainMenu(menu_items)
@@ -332,6 +388,16 @@ function ProgressSyncDeluxe:addToMainMenu(menu_items)
             DiagnosticLog.configure(enabled)
             if enabled then DiagnosticLog.log("diagnostic logging", "enabled") end
         end,
+    })
+    table.insert(sub_items, {
+        text = _("Check for Updates"),
+        enabled_func = function() return self.store ~= nil end,
+        callback = function() require("deluxe_sync_updater").check(self, true) end,
+        separator = true,
+    })
+    table.insert(sub_items, {
+        text = _("Credits"),
+        callback = function() self:showCredits() end,
     })
 
     menu_items.progress_sync_deluxe = {
@@ -2410,9 +2476,18 @@ function ProgressSyncDeluxe:autoSyncPull()
     self:pullAll(false)
 end
 
+function ProgressSyncDeluxe:scheduleAutomaticUpdateCheck()
+    if self._automatic_update_check_done or not self.store or not NetworkMgr:isOnline() then return end
+    self._automatic_update_check_done = true
+    UIManager:scheduleIn(1, function()
+        require("deluxe_sync_updater").checkAutomatic(self)
+    end)
+end
+
 function ProgressSyncDeluxe:onReaderReady()
     self.last_page_turn_timestamp = 0
     self.last_auto_sync_page = self.ui.getCurrentPage and self.ui:getCurrentPage() or nil
+    self:scheduleAutomaticUpdateCheck()
     if self:canAutoSync() then
         UIManager:nextTick(function() self:autoSyncPull() end)
     end
@@ -2435,6 +2510,7 @@ function ProgressSyncDeluxe:onSuspend()
 end
 
 function ProgressSyncDeluxe:onNetworkConnected()
+    self:scheduleAutomaticUpdateCheck()
     if not self:canAutoSync() then return end
     UIManager:scheduleIn(0.5, function()
         self:retryQueue(false, function()
