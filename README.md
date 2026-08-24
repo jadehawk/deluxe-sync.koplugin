@@ -4,36 +4,39 @@ Deluxe-Sync is a KOReader plugin that extends the built-in KOSync workflow to mu
 
 Current plugin version: **0.1.0**
 
-## Implemented in this initial build
+## Overview
 
-- Multiple server profiles, each with its own URL, username, derived KOSync user key, enable/disable state, and detected capabilities.
-- Standard KOReader KOSync account registration, authentication, and progress API compatibility.
-- Push the current reading position to every enabled server in parallel/asynchronously.
-- Auto-Sync Documents is enabled by default. It pulls on document ready/resume, pushes on suspend/close, queues offline pushes, and drains queued updates before pulling when the network reconnects.
-- Sync Behavior controls automatic pulls independently for newer and older remote states: Silently / Prompt / Never. Defaults are Prompt for newer states and Never for older states.
-- Per-server retry queue. A newer queued position for the same server/book replaces an older one; transient/offline failures are retried automatically on network reconnect while Auto-Sync is enabled.
-- Manual Pull always opens the read-only multi-server Sync Card, grouping identical exact progress values and sorting differing positions newest-first. Automatic Prompt uses the same card; automatic Silent may apply the selected newest remote state according to Sync Behavior.
-- Opening Deluxe-Sync with no registered servers shows onboarding with a complimentary `Techy-Notes.com` option (`https://sync.techy-notes.com`), custom-server setup, or cancel. The complimentary path reuses the normal server editor and registration flow with only name/URL prefilled.
-- Optional `GET /syncs/documents` capability detection for enhanced servers.
-- Remote-library browsing for enhanced servers and locally cached known-document browsing for standard servers.
-- Server-library scans against KOReader's configured home library, with binary checksum matches taking priority over filename and title/author matches.
-- Server-library browsing uses compact grouped cards separated into **With Metadata** and **Metadata Unavailable** sections. Selecting a server book opens an inspection-only two-column Book Review with book information and that single server record; it never changes the reader position or sync state.
-- Alias-aware pulls: after a merge, Deluxe-Sync queries both the canonical local document ID and legacy IDs retained for each server.
-- Safe progress preview: save the exact local position, jump to the remote percentage, suppress Deluxe-Sync syncing while previewing, inspect/adjust with the normal reader, then either restore the original position or accept the current local position.
-- Merge aliases: when a remote document record is accepted as the same book as the current local file, the remote document ID is retained as an alias of the local canonical document ID.
-- On merge acceptance, the actual local reader position is pushed under the local document ID, avoiding reuse of an XPointer from a potentially different EPUB edition.
-- Built-in GitHub update checks support one automatic check per KOReader session, manual checks from the Deluxe-Sync menu, per-version skip persistence, safe staged replacement, and a restart prompt after installation.
-- A Credits page shows the installed plugin version, project acknowledgements, and clickable project/support links.
-- Optional account-recovery support for enhanced KOSync servers: users can store an email with a server profile, request a time-limited recovery code, reset the KOSync password from the plugin, and have the new credential verified before it is saved. Standard KOSync servers remain fully compatible and simply report recovery as unsupported.
+Deluxe-Sync lets you configure multiple KOSync servers and push or pull reading progress across them from one plugin. It remains compatible with standard KOSync servers while detecting optional enhanced capabilities such as metadata, remote library listing, and account recovery.
 
-## Compatibility targets used during development
+Key capabilities include:
 
-- Enhanced metadata/document-listing server: `https://sync.send2ereader.net`
-- Standard KOSync server: `https://boxofbooks.org/api/v1/koreader`
+- Multiple independently configured KOSync servers.
+- Manual multi-server push and pull with a consolidated Pull Results view.
+- Optional automatic syncing. **Auto-Sync Documents is OFF by default** and must be enabled by the user.
+- Independent behavior for newer and older remote positions.
+- Per-server offline/transient retry queues with queue inspection and manual retry.
+- Metadata-aware enhanced-server support with automatic fallback to the standard KOSync payload.
+- Remote library browsing when supported by the server.
+- Safe remote-position review and preview before accepting a sync.
+- Optional six-digit email account recovery when supported by the server.
+- Built-in GitHub update checks and in-plugin updates.
 
-Credentials are deliberately not stored in the repository. Users enter passwords in the server editor; the plugin derives the same MD5 KOSync user key used by KOReader's built-in Progress Sync plugin.
+When Deluxe-Sync starts with no configured servers, it offers the complimentary **Techy-Notes.com** server at `https://sync.techy-notes.com` or lets the user configure a custom KOSync server. The complimentary server supports standard KOSync progress syncing plus metadata, remote library listing, and account recovery. Selecting it does not automatically enable Auto-Sync Documents.
 
-All plugin-owned runtime state is kept under KOReader's `settings/deluxe-sync/` directory. `settings.lua` stores servers, aliases, known documents, and plugin options; `queue.lua` stores retry work; `logs/deluxe-sync.log` records plugin diagnostics. Diagnostic logging is enabled by default and can be disabled from the Deluxe-Sync menu without removing the logging implementation.
+## Screenshots
+
+<p align="center">
+  <img src="assets/deluxe-sync_01.png" width="300" alt="Deluxe-Sync screenshot 1">
+  <img src="assets/deluxe-sync_02.png" width="300" alt="Deluxe-Sync screenshot 2">
+  <img src="assets/deluxe-sync_03.png" width="300" alt="Deluxe-Sync screenshot 3">
+  <img src="assets/deluxe-sync_04.png" width="300" alt="Deluxe-Sync screenshot 4">
+  <img src="assets/deluxe-sync_05.png" width="300" alt="Deluxe-Sync screenshot 5">
+  <img src="assets/deluxe-sync_06.png" width="300" alt="Deluxe-Sync screenshot 6">
+  <img src="assets/deluxe-sync_07.png" width="300" alt="Deluxe-Sync screenshot 7">
+  <img src="assets/deluxe-sync_08.png" width="300" alt="Deluxe-Sync screenshot 8">
+  <img src="assets/deluxe-sync_09.png" width="300" alt="Deluxe-Sync screenshot 9">
+  <img src="assets/deluxe-sync_10.png" width="300" alt="Deluxe-Sync screenshot 10">
+</p>
 
 ## Installation
 
@@ -45,26 +48,108 @@ All plugin-owned runtime state is kept under KOReader's `settings/deluxe-sync/` 
 
 After the initial installation, future releases can be installed directly from **Deluxe-Sync → Check for Updates**.
 
-## Preview / merge workflow
+## Protocol and payload examples
 
-1. Pull the current book from all servers.
-2. Select a remote position to preview.
-3. Deluxe-Sync records the exact current local position and jumps to the remote percentage.
-4. Choose **Inspect / adjust position** or **Hide to see preview** to dismiss the preview controls and inspect the actual local page. Page forward/backward as needed.
-5. While preview mode is active, a small **Preview Menu** button stays visible on the reader. Tap it at any time to reopen the preview controls.
-6. Use **Return without changes** at the bottom of the preview card to restore the exact original position, or accept the inspected position and continue to the merge/sync choices.
+The examples below use placeholders only. KOSync user keys are derived values, not plaintext passwords.
 
-While preview mode is active, Deluxe-Sync push/pull actions are disabled and automatic Deluxe-Sync syncing is suppressed. The on-reader **Preview Menu** control disappears automatically as soon as preview mode ends.
+### Account registration
 
-## Localization
+Deluxe-Sync uses the standard KOSync registration body:
 
-Deluxe-Sync uses plugin-owned JSON catalogs under `i18n/`. English is the default and fallback language in `i18n/en.json`. At startup the plugin reads KOReader's current UI language, first looks for an exact catalog such as `i18n/pt-BR.json`, then falls back to the base language such as `i18n/pt.json`, and finally to English. Missing keys fall back to their English/source text, so an incomplete translation never leaves the interface blank.
+```json
+{
+  "username": "reader01",
+  "password": "[REDACTED_SECRET]"
+}
+```
 
-New user-facing strings should be routed through `I18N.translate` (the local `_()` helper) and added to `i18n/en.json`; additional languages only require another JSON catalog with matching keys.
+The value sent as `password` is the derived KOSync user key generated from the password entered in the plugin, matching KOReader's built-in Progress Sync behavior.
 
-## UI status
+### Login / authorization
 
-The synchronization engine, local-library matching, and preview/merge flow are implemented. Server-library browsing is intentionally inspection-only and uses KOReader-native compact cards grouped by metadata availability, with a two-column single-server Book Review for record inspection.
+Authorization does not send a JSON login body. Deluxe-Sync sends the KOSync credentials as HTTP headers:
+
+```text
+Accept: application/vnd.koreader.v1+json
+X-Auth-User: reader01
+X-Auth-Key: [REDACTED_SECRET]
+```
+
+### Standard progress push
+
+```json
+{
+  "document": "[DOCUMENT_DIGEST]",
+  "progress": "[KOREADER_PROGRESS_OR_XPOINTER]",
+  "percentage": 0.7087,
+  "device": "Kobo_clara_bw",
+  "device_id": "[DELUXE_SYNC_DEVICE_ID]"
+}
+```
+
+### Enhanced progress push with metadata
+
+When metadata is enabled for a compatible server, Deluxe-Sync extends the standard payload with:
+
+```json
+{
+  "document": "[DOCUMENT_DIGEST]",
+  "progress": "[KOREADER_PROGRESS_OR_XPOINTER]",
+  "percentage": 0.7087,
+  "device": "Kobo_clara_bw",
+  "device_id": "[DELUXE_SYNC_DEVICE_ID]",
+  "metadata": {
+    "filename": "Destroyer of Worlds.epub",
+    "title": "Destroyer of Worlds",
+    "authors": "Matt Ruff"
+  }
+}
+```
+
+The metadata extension currently contains exactly `filename`, `title`, and `authors`. If metadata is disabled or the server is detected as metadata-incompatible, Deluxe-Sync falls back to the standard payload.
+
+### Recovery email enrollment
+
+Authenticated request body:
+
+```json
+{
+  "email": "[RECOVERY_EMAIL]"
+}
+```
+
+### Request a recovery code
+
+```json
+{
+  "username": "reader01",
+  "email": "[RECOVERY_EMAIL]"
+}
+```
+
+### Confirm password recovery
+
+```json
+{
+  "username": "reader01",
+  "email": "[RECOVERY_EMAIL]",
+  "code": "[SIX_DIGIT_CODE]",
+  "new_userkey": "[REDACTED_SECRET]"
+}
+```
+
+After a successful reset, Deluxe-Sync verifies the replacement credential before saving it.
+
+## Project links
+
+- [Techy Notes](https://techy-notes.com) — blog, projects, notes, and guides.
+- [Jadehawk on YouTube](https://youtube.com/@jadehawk) — project videos and tutorials.
+- [Buy Me a Coffee](https://buymeacoffee.com/jadehawk) — support development of these projects.
+- [Deluxe-Sync on GitHub](https://github.com/jadehawk/deluxe-sync.koplugin) — source code, releases, and issue tracking.
+
+## Runtime data
+
+All plugin-owned runtime state is kept under KOReader's `settings/deluxe-sync/` directory. `settings.lua` stores servers, known documents, and plugin options; `queue.lua` stores retry work; and `logs/deluxe-sync.log` records plugin diagnostics. Diagnostic logging can be disabled from the Deluxe-Sync menu.
 
 ## Development
 
