@@ -464,8 +464,13 @@ function ProgressSyncDeluxe:pushAll(interactive)
     local function done()
         pending = pending - 1
         if pending == 0 and interactive then
-            UIManager:show(InfoMessage:new{
-                text = T(_("Deluxe-Sync\n\nSynced: %1\nKOSync compatibility errors: %2\nQueued: %3\nFailed: %4\n\nCompatibility error means the server rejected a standard KOSync document hash because it requires its own library match."), success, not_tracked, queued, failed),
+            self:showStatusCard(_("Deluxe-Sync"), {
+                { label = _("Status"), value = _("Push Complete") },
+                { label = _("Synced"), value = tostring(success) },
+                { label = _("KOSync Errors"), value = tostring(not_tracked) },
+                { label = _("Queued"), value = tostring(queued) },
+                { label = _("Failed"), value = tostring(failed) },
+                { label = _("Note"), value = _("KOSync errors mean a server rejected the standard document hash because it requires its own library match.") },
             })
         end
     end
@@ -1942,8 +1947,34 @@ function ProgressSyncDeluxe:showRecoveryDialog(existing)
         return data
     end
 
-    local function unsupported()
-        UIManager:show(InfoMessage:new{ text = _("This server does not support Deluxe-Sync account recovery.") })
+    local function recoveryServer(data)
+        data = data or existing
+        return {
+            name = data.name and data.name ~= "" and data.name or data.url,
+            url = data.url,
+            username = data.username,
+        }
+    end
+
+    local function showRecoveryReply(data, status_text, message, status, actions)
+        local rows = {
+            { label = _("Server"), value = serverLabel(recoveryServer(data)) },
+            { label = _("Status"), value = status_text },
+            { label = _("Message"), value = message },
+        }
+        if status then
+            table.insert(rows, { label = _("HTTP"), value = tostring(status) })
+        end
+        self:showStatusCard(_("Deluxe-Sync"), rows, actions)
+    end
+
+    local function unsupported(data, status)
+        showRecoveryReply(
+            data,
+            _("Recovery Not Supported"),
+            _("This server does not support Deluxe-Sync account recovery."),
+            status
+        )
     end
 
     local function requestCode()
@@ -1955,18 +1986,26 @@ function ProgressSyncDeluxe:showRecoveryDialog(existing)
         local cap_data = decode(cap_body)
         DiagnosticLog.log("recovery capability result", data.url, "status", cap_status or "nil", "body", cap_body or "")
         if not cap_ok or cap_status ~= 200 or (type(cap_data) == "table" and cap_data.supported == false) then
-            return unsupported()
+            return unsupported(data, cap_status)
         end
         local ok, status, body = client:requestRecovery(data.username, data.email)
         DiagnosticLog.log("recovery request result", data.url, "status", status or "nil", "body", body or "")
         if ok and (status == 200 or status == 202) then
-            UIManager:show(InfoMessage:new{
-                text = _("If the account details are valid, a time-limited recovery code has been sent to the supplied email address."),
-            })
+            showRecoveryReply(
+                data,
+                _("Recovery Code Requested"),
+                _("If the account details are valid, a time-limited recovery code has been sent to the supplied email address."),
+                status
+            )
             return
         end
-        if status == 404 or status == 405 then return unsupported() end
-        UIManager:show(InfoMessage:new{ text = serverResponseMessage(body) or _("The server could not start account recovery.") })
+        if status == 404 or status == 405 then return unsupported(data, status) end
+        showRecoveryReply(
+            data,
+            _("Recovery Request Failed"),
+            serverResponseMessage(body) or _("The server could not start account recovery."),
+            status
+        )
     end
 
     local function confirmReset()
@@ -1978,15 +2017,25 @@ function ProgressSyncDeluxe:showRecoveryDialog(existing)
         local ok, status, body = client:confirmRecovery(data.username, data.email, data.code, new_key)
         DiagnosticLog.log("recovery confirm result", data.url, "status", status or "nil", "body_length", #tostring(body or ""))
         if not ok or (status ~= 200 and status ~= 204) then
-            if status == 404 or status == 405 then return unsupported() end
-            UIManager:show(InfoMessage:new{ text = serverResponseMessage(body) or _("The recovery code was not accepted or has expired.") })
+            if status == 404 or status == 405 then return unsupported(data, status) end
+            showRecoveryReply(
+                data,
+                _("Password Reset Failed"),
+                serverResponseMessage(body) or _("The recovery code was not accepted or has expired."),
+                status
+            )
             return
         end
 
         local auth_ok, auth_status, auth_body = client:authorize(data.username, new_key)
         DiagnosticLog.log("recovery post-reset authorize", data.url, "username", data.username, "status", auth_status or "nil")
         if not auth_ok then
-            UIManager:show(InfoMessage:new{ text = serverResponseMessage(auth_body) or _("The password was reset, but the new credentials could not be verified. Please try signing in manually.") })
+            showRecoveryReply(
+                data,
+                _("Credential Verification Failed"),
+                serverResponseMessage(auth_body) or _("The password was reset, but the new credentials could not be verified. Please try signing in manually."),
+                auth_status
+            )
             return
         end
 
@@ -2005,8 +2054,19 @@ function ProgressSyncDeluxe:showRecoveryDialog(existing)
         }
         local saved = self.store:upsertServer(server)
         UIManager:close(dialog)
-        UIManager:show(InfoMessage:new{ text = _("Password reset completed and the new credentials were verified."), timeout = 3 })
-        self:testServer(saved)
+        showRecoveryReply(
+            data,
+            _("Password Reset Complete"),
+            _("Password reset completed and the new credentials were verified."),
+            status,
+            {{
+                text = _("Continue"),
+                callback = function(card)
+                    UIManager:close(card)
+                    self:testServer(saved)
+                end,
+            }}
+        )
     end
 
     dialog = MultiInputDialog:new{
@@ -2037,26 +2097,19 @@ function ProgressSyncDeluxe:showRecoveryDialog(existing)
 end
 
 function ProgressSyncDeluxe:showServerFailureDialog(server, title, message, status)
-    local dialog
-    dialog = ButtonDialog:new{
-        title = title,
-        title_align = "left",
-        buttons = {
-            {{ text = serverLabel(server), enabled = false }},
-            {{ text = T(_("Username: %1"), server.username or ""), enabled = false }},
-            {{ text = message, enabled = false }},
-            {{ text = T(_("HTTP %1"), status or "?"), enabled = false }},
-            {
-                { text = _("Back to Server Setup"), callback = function()
-                    UIManager:close(dialog)
-                    self:addServerDialog(server)
-                end },
-                { text = _("Close"), callback = function() UIManager:close(dialog) end },
-            },
-        },
-    }
-    suppressDialogContainerHolds(dialog)
-    UIManager:show(dialog)
+    self:showStatusCard(_("Deluxe-Sync"), {
+        { label = _("Server"), value = serverLabel(server) },
+        { label = _("Username"), value = server.username or "" },
+        { label = _("Status"), value = title },
+        { label = _("Message"), value = message },
+        { label = _("HTTP"), value = tostring(status or "?") },
+    }, {
+        { text = _("Back to Server Setup"), callback = function(card)
+            UIManager:close(card)
+            self:addServerDialog(server)
+        end },
+        { text = _("Close") },
+    })
 end
 
 function ProgressSyncDeluxe:registerServerAccount(server)
@@ -2089,11 +2142,95 @@ function ProgressSyncDeluxe:registerServerAccount(server)
         return
     end
     self.store:upsertServer(server)
-    UIManager:show(InfoMessage:new{
-        text = T(_("Account created on %1. Testing sign in and server capabilities..."), serverLabel(server)),
-        timeout = 2,
-    })
     self:testServer(server)
+end
+
+function ProgressSyncDeluxe:showStatusCard(title, rows, actions)
+    local dialog
+    local title_face = Font:getFace("smallinfofontbold")
+    local label_face = Font:getFace("smallinfofontbold", 17)
+    local value_face = Font:getFace("smallinfofont", 17)
+    local button_rows = {}
+
+    if actions and #actions > 0 then
+        local action_row = {}
+        for _, action in ipairs(actions) do
+            local item = action
+            table.insert(action_row, {
+                text = item.text,
+                callback = function()
+                    if item.callback then item.callback(dialog) else UIManager:close(dialog) end
+                end,
+            })
+        end
+        table.insert(button_rows, action_row)
+    else
+        table.insert(button_rows, {{
+            text = _("Close"),
+            callback = function() UIManager:close(dialog) end,
+        }})
+    end
+
+    dialog = ButtonDialog:new{
+        title = title or _("Deluxe-Sync"),
+        title_align = "left",
+        title_face = title_face,
+        width_factor = 0.82,
+        use_info_style = false,
+        buttons = button_rows,
+    }
+
+    local available_width = dialog:getAddedWidgetAvailableWidth()
+    local padding = math.max(8, Device.screen:scaleBySize(8))
+    local inner_width = math.max(1, available_width - padding * 2 - 2)
+    local label_width = math.floor(inner_width * 0.42)
+    local value_width = math.max(1, inner_width - label_width)
+    local row_widgets = VerticalGroup:new{ align = "left" }
+
+    for _, row in ipairs(rows or {}) do
+        table.insert(row_widgets, HorizontalGroup:new{
+            align = "center",
+            TextBoxWidget:new{
+                text = tostring(row.label or "") .. ":",
+                width = label_width,
+                face = label_face,
+                alignment = "left",
+            },
+            TextBoxWidget:new{
+                text = tostring(row.value or ""),
+                width = value_width,
+                face = value_face,
+                alignment = "left",
+            },
+        })
+    end
+
+    local content = LeftContainer:new{
+        dimen = Geom:new{ w = inner_width, h = row_widgets:getSize().h },
+        row_widgets,
+    }
+    dialog:addWidget(FrameContainer:new{
+        width = available_width,
+        bordersize = 1,
+        radius = math.max(7, Device.screen:scaleBySize(7)),
+        padding = padding,
+        content,
+    })
+    suppressDialogContainerHolds(dialog)
+    UIManager:show(dialog)
+    return dialog
+end
+
+function ProgressSyncDeluxe:showServerTestResult(server, listing_supported, book_count, recovery_supported)
+    local listing_value = listing_supported
+        and T(_("Supported (%1 Books)"), book_count or 0)
+        or _("Not Supported")
+    self:showStatusCard(_("Deluxe-Sync"), {
+        { label = _("Server"), value = serverLabel(server) },
+        { label = _("Status"), value = _("Connected") },
+        { label = _("Library Listing"), value = listing_value },
+        { label = _("Account Recovery"), value = recovery_supported and _("Supported") or _("Not Supported") },
+    })
 end
 
 function ProgressSyncDeluxe:testServer(server)
@@ -2123,10 +2260,10 @@ function ProgressSyncDeluxe:testServer(server)
         if list_ok and list_status == 200 and data and type(data.documents) == "table" then
             self.store:setCapability(server.id, "document_listing", true)
             self.store:setKnownDocuments(server.id, data.documents)
-            UIManager:show(InfoMessage:new{ text = T(_("%1 connected. Remote library listing supported (%2 books)."), serverLabel(server), #data.documents) })
+            self:showServerTestResult(server, true, #data.documents, recovery_supported)
         else
             self.store:setCapability(server.id, "document_listing", false)
-            UIManager:show(InfoMessage:new{ text = T(_("%1 connected. Standard KOSync mode; remote library listing is not supported."), serverLabel(server)) })
+            self:showServerTestResult(server, false, 0, recovery_supported)
         end
     end)
 end
