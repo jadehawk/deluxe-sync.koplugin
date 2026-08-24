@@ -2272,15 +2272,18 @@ function ProgressSyncDeluxe:showServer(server)
     local caps = server.capabilities or {}
     local listing = caps.document_listing == true and _("Supported") or (caps.document_listing == false and _("Not supported") or _("Unknown"))
     local recovery = caps.account_recovery == true and _("Supported") or (caps.account_recovery == false and _("Not supported") or _("Unknown"))
+    local enabled = server.enabled ~= false
     local buttons = {
-        {{ text = T(_("Enabled: %1"), server.enabled ~= false and _("Yes") or _("No")), callback = function() self.store:setServerEnabled(server.id, server.enabled == false); UIManager:close(self.server_dialog); self:showServer(self.store:getServer(server.id)) end }},
-        {{ text = T(_("Remote library: %1"), listing), enabled = false }},
-        {{ text = T(_("Account recovery: %1"), recovery), enabled = false }},
-        {{ text = _("Refresh / test capabilities"), callback = function() UIManager:close(self.server_dialog); self:testServer(server) end }},
-        {{ text = _("Browse tracked books"), callback = function() UIManager:close(self.server_dialog); self:refreshServerLibrary(server) end }},
-        {{ text = _("Recovery"), callback = function() UIManager:close(self.server_dialog); self:showRecoveryDialog(server) end }},
-        {{ text = _("Edit server"), callback = function() UIManager:close(self.server_dialog); self:addServerDialog(server) end }},
-        {{ text = _("Delete server"), callback = function()
+        {{ text = _("Refresh / Test Capabilities"), callback = function() UIManager:close(self.server_dialog); self:testServer(server) end }},
+        {{ text = _("Browse Tracked Books"), callback = function() UIManager:close(self.server_dialog); self:refreshServerLibrary(server) end }},
+        {{ text = _("Account Recovery"), callback = function() UIManager:close(self.server_dialog); self:showRecoveryDialog(server) end }},
+        {{ text = _("Edit Server"), callback = function() UIManager:close(self.server_dialog); self:addServerDialog(server) end }},
+        {{ text = enabled and _("Disable Server") or _("Enable Server"), callback = function()
+            self.store:setServerEnabled(server.id, not enabled)
+            UIManager:close(self.server_dialog)
+            self:showServer(self.store:getServer(server.id))
+        end }},
+        {{ text = _("Delete Server"), callback = function()
             local confirm_dialog
             confirm_dialog = ButtonDialog:new{
                 title = _("Delete server?"),
@@ -2302,9 +2305,53 @@ function ProgressSyncDeluxe:showServer(server)
             suppressDialogContainerHolds(confirm_dialog)
             UIManager:show(confirm_dialog)
         end }},
-        {{ text = _("Back to server list"), callback = function() UIManager:close(self.server_dialog); self:showServers() end }},
+        {{ text = _("Back to Server List"), callback = function() UIManager:close(self.server_dialog); self:showServers() end }},
     }
-    self.server_dialog = ButtonDialog:new{ title = _("Deluxe-Sync"), title_align = "left", buttons = buttons }
+
+    self.server_dialog = ButtonDialog:new{
+        title = _("Deluxe-Sync"),
+        title_align = "left",
+        buttons = buttons,
+    }
+
+    local available_width = self.server_dialog:getAddedWidgetAvailableWidth()
+    local padding = math.max(8, Device.screen:scaleBySize(8))
+    local inner_width = math.max(1, available_width - padding * 2 - 2)
+    local label_width = math.floor(inner_width * 0.44)
+    local value_width = math.max(1, inner_width - label_width)
+    local label_face = Font:getFace("smallinfofontbold", 17)
+    local value_face = Font:getFace("smallinfofont", 17)
+    local server_face = Font:getFace("smallinfofontbold", 19)
+    local status_rows = VerticalGroup:new{ align = "left" }
+
+    local function addStatusRow(label, value)
+        table.insert(status_rows, HorizontalGroup:new{
+            align = "center",
+            TextBoxWidget:new{ text = label .. ":", width = label_width, face = label_face, alignment = "left" },
+            TextBoxWidget:new{ text = value, width = value_width, face = value_face, alignment = "left" },
+        })
+    end
+
+    addStatusRow(_("Enabled"), enabled and _("Yes") or _("No"))
+    addStatusRow(_("Library Listing"), listing)
+    addStatusRow(_("Account Recovery"), recovery)
+
+    local card = FrameContainer:new{
+        width = available_width,
+        bordersize = 1,
+        radius = math.max(7, Device.screen:scaleBySize(7)),
+        padding = padding,
+        LeftContainer:new{
+            dimen = Geom:new{ w = inner_width, h = status_rows:getSize().h },
+            status_rows,
+        },
+    }
+    local header = VerticalGroup:new{ align = "left" }
+    table.insert(header, TextBoxWidget:new{ text = serverLabel(server), width = available_width, face = server_face, alignment = "left" })
+    table.insert(header, VerticalSpan:new{ width = math.max(5, Device.screen:scaleBySize(5)) })
+    table.insert(header, card)
+    self.server_dialog:addWidget(header)
+
     suppressDialogContainerHolds(self.server_dialog)
     UIManager:show(self.server_dialog)
 end
