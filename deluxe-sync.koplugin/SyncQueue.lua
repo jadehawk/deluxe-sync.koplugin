@@ -28,10 +28,26 @@ function SyncQueue:push(item)
             table.insert(filtered, old)
         end
     end
+    item.queued_at = item.queued_at or os.time()
+    item.reason = item.reason or "Pending retry"
     table.insert(filtered, item)
     self.items = filtered
     self:save()
-    DiagnosticLog.log("queue push", "server", item.server_id, "document", item.document, "count", #self.items)
+    DiagnosticLog.log("queue push", "server", item.server_id, "document", item.document, "reason", item.reason, "count", #self.items)
+end
+
+function SyncQueue:updateFailure(server_id, document, status, reason)
+    for _, item in ipairs(self.items) do
+        if item.server_id == server_id and item.document == document then
+            item.last_status = status
+            item.reason = reason or "Pending retry"
+            item.last_attempt_at = os.time()
+            self:save()
+            DiagnosticLog.log("queue update failure", "server", server_id, "document", document, "status", status or "nil", "reason", item.reason)
+            return true
+        end
+    end
+    return false
 end
 
 function SyncQueue:remove(server_id, document)

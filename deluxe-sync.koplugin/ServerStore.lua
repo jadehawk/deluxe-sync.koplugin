@@ -14,7 +14,7 @@ local defaults = {
     aliases = {},
     known_documents = {},
     settings = {
-        auto_sync = true,
+        auto_sync = false,
         sync_forward = "prompt",
         sync_backward = "never",
         logging_enabled = true,
@@ -41,7 +41,7 @@ function ServerStore:new()
     o.data.aliases = o.data.aliases or {}
     o.data.known_documents = o.data.known_documents or {}
     o.data.settings = o.data.settings or deepCopy(defaults.settings)
-    if o.data.settings.auto_sync == nil then o.data.settings.auto_sync = true end
+    if o.data.settings.auto_sync == nil then o.data.settings.auto_sync = false end
     if o.data.settings.sync_forward == nil then o.data.settings.sync_forward = "prompt" end
     if o.data.settings.sync_backward == nil then o.data.settings.sync_backward = "never" end
     return o

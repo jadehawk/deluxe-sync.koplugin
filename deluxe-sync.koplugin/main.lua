@@ -56,6 +56,7 @@ local source_path = (debug.getinfo(1, "S").source or ""):gsub("^@", "")
 local plugin_root = source_path:match("^(.*)[/\\]main%.lua$") or "."
 local PluginMeta = dofile(plugin_root .. "/_meta.lua")
 local PLUGIN_VERSION = assert(PluginMeta.version, "Missing plugin version in _meta.lua")
+local QUEUE_DISABLE_THRESHOLD = 20
 
 local DiagnosticLog
 local SyncClient
@@ -138,6 +139,31 @@ local function serverResponseMessage(body)
     if type(body) == "string" and body ~= "" then
         return body
     end
+end
+
+local function userFacingServerFailure(status, body)
+    if not status then
+        return _("The server could not be reached. It may be offline or temporarily unavailable.")
+    end
+    if status == 401 then
+        return _("Authentication failed. Check the username and password.")
+    end
+    if status >= 500 then
+        return _("The server returned an error. Please try again later.")
+    end
+    local message = serverResponseMessage(body)
+    local lower = tostring(message or ""):lower()
+    if lower:find("protocols.lua", 1, true) or lower:find("wantread", 1, true) or lower:find("socket", 1, true) then
+        return _("The server could not be reached. It may be offline or temporarily unavailable.")
+    end
+    return message or T(_("The server request failed (HTTP %1)."), status)
+end
+
+local function queueFailureReason(status, body)
+    if not status then return _("Server unavailable") end
+    if status == 401 then return _("Authentication failed") end
+    if status >= 500 then return _("Server error") end
+    return T(_("Sync failed (HTTP %1)"), status)
 end
 
 local function isBookNotFoundResponse(status, body)
@@ -335,10 +361,10 @@ function ProgressSyncDeluxe:addToMainMenu(menu_items)
     })
     table.insert(sub_items, {
         text = _("Auto-Sync Documents"),
-        checked_func = function() return self.store ~= nil and self.store.data.settings.auto_sync ~= false end,
+        checked_func = function() return self.store ~= nil and self.store.data.settings.auto_sync == true end,
         enabled_func = function() return self.store ~= nil end,
         callback = function()
-            self.store.data.settings.auto_sync = self.store.data.settings.auto_sync == false
+            self.store.data.settings.auto_sync = self.store.data.settings.auto_sync ~= true
             self.store:flush()
         end,
     })
@@ -362,7 +388,7 @@ function ProgressSyncDeluxe:addToMainMenu(menu_items)
             return T(_("Queued updates (%1)"), queued)
         end,
         enabled_func = function() return self.queue ~= nil end,
-        callback = function() self:retryQueue(true) end,
+        callback = function() self:showQueuedUpdates() end,
         separator = true,
     })
     table.insert(sub_items, {
@@ -446,6 +472,20 @@ function ProgressSyncDeluxe:newClient(server)
     }
 end
 
+function ProgressSyncDeluxe:queueForServer(server, item)
+    self.queue:push(item)
+    local count = self.queue:count(server.id)
+    if count < QUEUE_DISABLE_THRESHOLD then return false end
+
+    self.store:setServerEnabled(server.id, false)
+    self.queue:removeServer(server.id)
+    if DiagnosticLog then DiagnosticLog.log("server auto disabled", serverLabel(server), "queued", count) end
+    UIManager:show(InfoMessage:new{
+        text = T(_("%1 automatically disabled after %2 queued updates."), serverLabel(server), QUEUE_DISABLE_THRESHOLD),
+    })
+    return true
+end
+
 function ProgressSyncDeluxe:pushAll(interactive)
     if DiagnosticLog then DiagnosticLog.log("push all", "interactive", interactive and true or false) end
     if self.preview then
@@ -470,7 +510,6 @@ function ProgressSyncDeluxe:pushAll(interactive)
                 { label = _("KOSync Errors"), value = tostring(not_tracked) },
                 { label = _("Queued"), value = tostring(queued) },
                 { label = _("Failed"), value = tostring(failed) },
-                { label = _("Note"), value = _("KOSync errors mean a server rejected the standard document hash because it requires its own library match.") },
             })
         end
     end
@@ -497,11 +536,17 @@ function ProgressSyncDeluxe:pushAll(interactive)
                 failed = failed + 1
             else
                 queued = queued + 1
-                self.queue:push{
+                local auto_disabled = self:queueForServer(server, {
                     server_id = server.id,
                     document = document,
                     payload = failed_payload,
-                }
+                    reason = queueFailureReason(status, body),
+                    last_status = status,
+                })
+                if auto_disabled then
+                    queued = queued - 1
+                    failed = failed + 1
+                end
             end
             done()
         end
@@ -554,16 +599,57 @@ function ProgressSyncDeluxe:queueCurrentProgress()
         if server.metadata_enabled ~= false and capabilities.metadata_compatible ~= false then
             payload.metadata = metadata
         end
-        self.queue:push{
+        self:queueForServer(server, {
             server_id = server.id,
             document = document,
             payload = payload,
-        }
+            reason = _("Waiting for connection"),
+        })
     end
     if DiagnosticLog then DiagnosticLog.log("auto sync", "queued offline progress", "servers", #self.store:getEnabledServers()) end
 end
 
+function ProgressSyncDeluxe:showQueuedUpdates()
+    local items = self.queue:list()
+    local rows = {
+        { label = _("Queued"), value = tostring(#items) },
+    }
+    if #items == 0 then
+        table.insert(rows, { label = _("Status"), value = _("No queued updates") })
+    else
+        for unused_index, item in ipairs(items) do
+            local server = self.store:getServer(item.server_id)
+            local payload = item.payload or {}
+            local metadata = payload.metadata or {}
+            local book = metadata.title or metadata.filename or item.document or _("Unknown document")
+            local reason = item.reason or _("Pending retry")
+            table.insert(rows, { label = server and serverLabel(server) or _("Unknown server"), value = book .. " — " .. reason })
+        end
+    end
+    local actions
+    if #items > 0 then
+        actions = {
+            { text = _("Retry Queued Updates"), callback = function(card)
+                UIManager:close(card)
+                self:retryQueue(true, function() self:showQueuedUpdates() end)
+            end },
+            { text = _("Close") },
+        }
+    end
+    self:showStatusCard(_("Queued Updates"), rows, actions)
+end
+
 function ProgressSyncDeluxe:retryQueue(interactive, complete_callback)
+    local stale_server_ids = {}
+    for unused_index, item in ipairs(self.queue:list()) do
+        local server = self.store:getServer(item.server_id)
+        if not server or server.enabled == false then stale_server_ids[item.server_id] = true end
+    end
+    for server_id in pairs(stale_server_ids) do
+        self.queue:removeServer(server_id)
+        if DiagnosticLog then DiagnosticLog.log("queue cleanup", "server", server_id, "reason", "missing or disabled") end
+    end
+
     local items = self.queue:list()
     if #items == 0 then
         if interactive then UIManager:show(InfoMessage:new{ text = _("No queued progress updates.") }) end
@@ -600,6 +686,8 @@ function ProgressSyncDeluxe:retryQueue(interactive, complete_callback)
                 elseif isBookNotFoundResponse(status, body) then
                     self.queue:remove(item.server_id, item.document)
                     if DiagnosticLog then DiagnosticLog.log("queue drop not tracked", serverLabel(server), "document", item.document, "status", status, "body", body) end
+                else
+                    self.queue:updateFailure(item.server_id, item.document, status, queueFailureReason(status, body))
                 end
                 done()
             end)
@@ -2097,13 +2185,14 @@ function ProgressSyncDeluxe:showRecoveryDialog(existing)
 end
 
 function ProgressSyncDeluxe:showServerFailureDialog(server, title, message, status)
-    self:showStatusCard(_("Deluxe-Sync"), {
+    local rows = {
         { label = _("Server"), value = serverLabel(server) },
         { label = _("Username"), value = server.username or "" },
         { label = _("Status"), value = title },
         { label = _("Message"), value = message },
-        { label = _("HTTP"), value = tostring(status or "?") },
-    }, {
+    }
+    if status then table.insert(rows, { label = _("HTTP"), value = tostring(status) }) end
+    self:showStatusCard(_("Deluxe-Sync"), rows, {
         { text = _("Back to Server Setup"), callback = function(card)
             UIManager:close(card)
             self:addServerDialog(server)
@@ -2119,7 +2208,7 @@ function ProgressSyncDeluxe:registerServerAccount(server)
     })
     local ok, status, body = self:newClient(server):register(server.username, server.userkey)
     if not ok then
-        local message = serverResponseMessage(body)
+        local message = userFacingServerFailure(status, body)
         local title = _("REGISTRATION FAILED")
         if status == 402 then
             title = _("ACCOUNT NOT CREATED")
@@ -2136,7 +2225,8 @@ function ProgressSyncDeluxe:registerServerAccount(server)
             title = _("REGISTRATION NOT AVAILABLE")
             message = message or _("This server does not allow account creation through KOReader.")
         elseif not status then
-            message = message or _("The server did not complete the registration request.")
+            title = _("CONNECTION FAILED")
+            message = userFacingServerFailure(status, body)
         end
         self:showServerFailureDialog(server, title, message or _("Unknown server error"), status)
         return
@@ -2237,13 +2327,9 @@ function ProgressSyncDeluxe:testServer(server)
     local client = self:newClient(server)
     local ok, status, body = client:authorize(server.username, server.userkey)
     if not ok then
-        local message
-        if status == 401 then
-            message = _("The username or password was not accepted. Check your credentials and try again.")
-        else
-            message = serverResponseMessage(body) or _("The server did not accept the sign-in request.")
-        end
-        self:showServerFailureDialog(server, _("SIGN-IN FAILED"), message, status)
+        local title = status and _("SIGN-IN FAILED") or _("CONNECTION FAILED")
+        local message = userFacingServerFailure(status, body)
+        self:showServerFailureDialog(server, title, message, status)
         return
     end
     local recovery_ok, recovery_status, recovery_body = client:recoveryCapability()
@@ -2279,7 +2365,9 @@ function ProgressSyncDeluxe:showServer(server)
         {{ text = _("Account Recovery"), callback = function() UIManager:close(self.server_dialog); self:showRecoveryDialog(server) end }},
         {{ text = _("Edit Server"), callback = function() UIManager:close(self.server_dialog); self:addServerDialog(server) end }},
         {{ text = enabled and _("Disable Server") or _("Enable Server"), callback = function()
-            self.store:setServerEnabled(server.id, not enabled)
+            local new_enabled = not enabled
+            self.store:setServerEnabled(server.id, new_enabled)
+            if not new_enabled and self.queue then self.queue:removeServer(server.id) end
             UIManager:close(self.server_dialog)
             self:showServer(self.store:getServer(server.id))
         end }},
@@ -2806,7 +2894,7 @@ function ProgressSyncDeluxe:showServerLibrary(server, documents, authoritative)
 end
 function ProgressSyncDeluxe:canAutoSync()
     return self.store ~= nil
-        and self.store.data.settings.auto_sync ~= false
+        and self.store.data.settings.auto_sync == true
         and self.ui.document ~= nil
         and not self.preview
         and #self.store:getEnabledServers() > 0
