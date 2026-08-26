@@ -2,6 +2,7 @@ local UIManager = require("ui/uimanager")
 local logger = require("logger")
 local socketutil = require("socketutil")
 local DiagnosticLog = require("DiagnosticLog")
+local UrlUtil = require("UrlUtil")
 
 local PROGRESS_TIMEOUTS = { 2, 5 }
 local AUTH_TIMEOUTS = { 5, 10 }
@@ -17,8 +18,22 @@ function SyncClient:new(o)
 end
 
 function SyncClient:init()
+    local normalized_url, url_error = UrlUtil.normalize(self.custom_url)
+    if not normalized_url then
+        self.init_error = url_error
+        DiagnosticLog.log("client init rejected", self.custom_url or "", url_error or "invalid URL")
+        return
+    end
+    self.custom_url = normalized_url
+
     local Spore = require("Spore")
-    self.client = Spore.new_from_spec(self.service_spec, { base_url = self.custom_url })
+    local ok, client_or_error = pcall(Spore.new_from_spec, self.service_spec, { base_url = self.custom_url })
+    if not ok then
+        self.init_error = tostring(client_or_error)
+        DiagnosticLog.log("client init failure", self.custom_url or "", self.init_error)
+        return
+    end
+    self.client = client_or_error
     package.loaded["Spore.Middleware.PSDGinClient"] = {}
     require("Spore.Middleware.PSDGinClient").call = function(_, req)
         req.headers["accept"] = "application/vnd.koreader.v1+json"
@@ -52,14 +67,17 @@ function SyncClient:init()
 end
 
 function SyncClient:_setup(username, userkey)
+    if not self.client then return false, self.init_error or "Sync client is unavailable" end
     self.client:reset_middlewares()
     self.client:enable("Format.JSON")
     self.client:enable("PSDGinClient")
     self.client:enable("PSDAuth", { username = username, userkey = userkey })
+    return true
 end
 
 function SyncClient:register(username, userkey)
     DiagnosticLog.log("register", self.custom_url or "", username)
+    if not self.client then return false, nil, self.init_error or "Sync client is unavailable" end
     self.client:reset_middlewares()
     self.client:enable("Format.JSON")
     self.client:enable("PSDGinClient")
@@ -85,7 +103,8 @@ end
 
 function SyncClient:authorize(username, userkey)
     DiagnosticLog.log("authorize", self.custom_url or "", username)
-    self:_setup(username, userkey)
+    local setup_ok, setup_error = self:_setup(username, userkey)
+    if not setup_ok then return false, nil, setup_error end
     socketutil:set_timeout(AUTH_TIMEOUTS[1], AUTH_TIMEOUTS[2])
     local ok, res = pcall(function() return self.client:authorize() end)
     socketutil:reset_timeout()
@@ -101,6 +120,7 @@ function SyncClient:authorize(username, userkey)
 end
 
 function SyncClient:_publicCall(method, params)
+    if not self.client then return false, nil, self.init_error or "Sync client is unavailable" end
     self.client:reset_middlewares()
     self.client:enable("Format.JSON")
     self.client:enable("PSDGinClient")
@@ -141,7 +161,8 @@ end
 
 function SyncClient:setRecoveryEmail(username, userkey, email)
     DiagnosticLog.log("recovery email update", self.custom_url or "", "username", username or "", "email", email or "")
-    self:_setup(username, userkey)
+    local setup_ok, setup_error = self:_setup(username, userkey)
+    if not setup_ok then return false, nil, setup_error end
     socketutil:set_timeout(AUTH_TIMEOUTS[1], AUTH_TIMEOUTS[2])
     local ok, res = pcall(function()
         return self.client:recovery_email({ email = email })
@@ -182,7 +203,12 @@ function SyncClient:confirmRecovery(username, email, code, new_userkey)
 end
 
 function SyncClient:_async(method, username, userkey, params, callback)
-    self:_setup(username, userkey)
+    local setup_ok, setup_error = self:_setup(username, userkey)
+    if not setup_ok then
+        DiagnosticLog.log("http request blocked", method, self.custom_url or "", setup_error or "Sync client is unavailable")
+        callback(false, nil, setup_error)
+        return
+    end
     DiagnosticLog.log("http request", method, self.custom_url or "", params or {})
     socketutil:set_timeout(PROGRESS_TIMEOUTS[1], PROGRESS_TIMEOUTS[2])
     local co = coroutine.create(function()

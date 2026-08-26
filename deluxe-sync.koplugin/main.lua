@@ -62,6 +62,8 @@ local DiagnosticLog
 local SyncClient
 local SyncQueue
 local ServerStore
+local UrlUtil
+local ResponseUtil
 local Resolver
 local LocalLibrary
 
@@ -136,6 +138,9 @@ local function serverResponseMessage(body)
     if type(data) == "table" then
         return data.message or data.error
     end
+    if ResponseUtil and ResponseUtil.isHtml(body) then
+        return nil
+    end
     if type(body) == "string" and body ~= "" then
         return body
     end
@@ -150,6 +155,9 @@ local function userFacingServerFailure(status, body)
     end
     if status >= 500 then
         return _("The server returned an error. Please try again later.")
+    end
+    if ResponseUtil and ResponseUtil.isHtml(body) then
+        return "Unexpected HTML response from server (HTTP " .. tostring(status) .. "). Check the server URL."
     end
     local message = serverResponseMessage(body)
     local lower = tostring(message or ""):lower()
@@ -202,6 +210,8 @@ function ProgressSyncDeluxe:init()
         SyncClient = require("SyncClient")
         SyncQueue = require("SyncQueue")
         ServerStore = require("ServerStore")
+        UrlUtil = require("UrlUtil")
+        ResponseUtil = require("ResponseUtil")
         Resolver = require("Resolver")
         LocalLibrary = require("LocalLibrary")
         self.store = ServerStore:new()
@@ -1897,6 +1907,13 @@ function ProgressSyncDeluxe:addServerDialog(existing)
             })
             return
         end
+        local normalized_url, url_error = UrlUtil.normalize(url)
+        if not normalized_url then
+            UIManager:show(InfoMessage:new{ text = url_error or _("Server URL is invalid.") })
+            return
+        end
+        url = normalized_url
+
         local key = password ~= "" and userkey(password) or existing.userkey
         if not key then
             UIManager:show(InfoMessage:new{ text = _("Password is required.") })
@@ -1975,7 +1992,7 @@ function ProgressSyncDeluxe:addServerDialog(existing)
         title = _("Deluxe-Sync"),
         fields = {
             { text = existing.name or "", hint = _("Server name") },
-            { text = existing.url or "", hint = _("Server URL") },
+            { text = existing.url or "", hint = _("URL (http:// or https://; defaults to https://)") },
             { text = existing.username or "", hint = _("Username") },
             { text = "", hint = existing.userkey and _("Password (leave blank to keep current)") or _("Password"), text_type = "password" },
             { text = existing.email or "", hint = _("Email (optional, for account recovery)") },
@@ -2161,7 +2178,7 @@ function ProgressSyncDeluxe:showRecoveryDialog(existing)
         title = _("Deluxe-Sync — Account Recovery"),
         fields = {
             { text = existing.name or "", hint = _("Server name") },
-            { text = existing.url or "", hint = _("Server URL") },
+            { text = existing.url or "", hint = _("URL (http:// or https://; defaults to https://)") },
             { text = existing.username or "", hint = _("Username") },
             { text = existing.email or "", hint = _("Email") },
             { text = "", hint = _("Recovery code") },

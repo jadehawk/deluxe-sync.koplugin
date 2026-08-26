@@ -3,6 +3,7 @@ local LuaSettings = require("luasettings")
 local lfs = require("libs/libkoreader-lfs")
 local md5 = require("ffi/sha2").md5
 local DiagnosticLog = require("DiagnosticLog")
+local UrlUtil = require("UrlUtil")
 
 local ServerStore = {}
 
@@ -44,6 +45,26 @@ function ServerStore:new()
     if o.data.settings.auto_sync == nil then o.data.settings.auto_sync = false end
     if o.data.settings.sync_forward == nil then o.data.settings.sync_forward = "prompt" end
     if o.data.settings.sync_backward == nil then o.data.settings.sync_backward = "never" end
+
+    local servers_changed = false
+    for _, server in ipairs(o.data.servers) do
+        local normalized_url, url_error = UrlUtil.normalize(server.url)
+        if normalized_url then
+            if server.url ~= normalized_url then
+                DiagnosticLog.log("server URL normalized", server.name or "", server.url or "", normalized_url)
+                server.url = normalized_url
+                servers_changed = true
+            end
+        elseif server.enabled ~= false then
+            DiagnosticLog.log("server disabled invalid URL", server.name or "", server.url or "", url_error or "invalid URL")
+            server.enabled = false
+            servers_changed = true
+        end
+    end
+    if servers_changed then
+        o.settings_obj:saveSetting("data", o.data)
+        o.settings_obj:flush()
+    end
     return o
 end
 

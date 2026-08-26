@@ -2,6 +2,8 @@ package.path = "./?.lua;" .. package.path
 
 local logs = {}
 local captured = {}
+local spore_calls = 0
+local spore_should_throw = false
 
 package.preload["ui/uimanager"] = function() return { looper = nil, setInputTimeout = function() end } end
 package.preload["logger"] = function() return { dbg = function() end } end
@@ -43,10 +45,41 @@ local fake_client = {
 }
 
 package.preload["Spore"] = function()
-    return { new_from_spec = function() return fake_client end }
+    return {
+        new_from_spec = function(_, options)
+            spore_calls = spore_calls + 1
+            captured.base_url = options and options.base_url
+            if spore_should_throw then error("simulated Spore URL failure") end
+            return fake_client
+        end,
+    }
 end
 
 local SyncClient = require("SyncClient")
+
+local scheme_less = SyncClient:new{ service_spec = "api.json", custom_url = "sync.example.com" }
+assert(scheme_less.custom_url == "https://sync.example.com")
+assert(captured.base_url == "https://sync.example.com")
+
+local calls_before_invalid = spore_calls
+local invalid = SyncClient:new{ service_spec = "api.json", custom_url = "http://" }
+assert(invalid.client == nil)
+assert(spore_calls == calls_before_invalid, "invalid URL should be rejected before Spore")
+local invalid_callback_called = false
+invalid:getProgress("reader", "key", "document", function(ok, status, body)
+    invalid_callback_called = true
+    assert(ok == false and status == nil)
+    assert(type(body) == "string" and body ~= "")
+end)
+assert(invalid_callback_called, "invalid client should fail asynchronously without crashing")
+
+spore_should_throw = true
+local protected = SyncClient:new{ service_spec = "api.json", custom_url = "https://sync.example.com" }
+spore_should_throw = false
+assert(protected.client == nil, "Spore constructor failure should be contained")
+local protected_ok, protected_status = protected:recoveryCapability()
+assert(protected_ok == false and protected_status == nil)
+
 local client = SyncClient:new{ service_spec = "api.json", custom_url = "http://192.168.1.20:8080" }
 
 local ok, status = client:recoveryCapability()

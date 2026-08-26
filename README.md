@@ -2,7 +2,7 @@
 
 Deluxe-Sync is a KOReader plugin that extends the built-in KOSync workflow to multiple independent KOReader-compatible servers.
 
-Current plugin version: **0.1.0**
+Current plugin version: **0.1.1**
 
 ## Overview
 
