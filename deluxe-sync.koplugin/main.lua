@@ -1,4 +1,5 @@
 local Device = require("device")
+local Dispatcher = require("dispatcher")
 local NetworkMgr = require("ui/network/manager")
 local Blitbuffer = require("ffi/blitbuffer")
 local Event = require("ui/event")
@@ -231,6 +232,75 @@ function ProgressSyncDeluxe:init()
     end
 end
 
+function ProgressSyncDeluxe:onDispatcherRegisterActions()
+    Dispatcher:registerAction("deluxe_sync_set_autosync",
+        { category="string", event="DeluxeSyncToggleAutoSync", title=_("Deluxe-Sync: Set Auto-Sync"), reader=true,
+        args={true, false}, toggle={_("on"), _("off")},})
+    Dispatcher:registerAction("deluxe_sync_toggle_autosync", { category="none", event="DeluxeSyncToggleAutoSync", title=_("Deluxe-Sync: Toggle Auto-Sync"), reader=true,})
+    Dispatcher:registerAction("deluxe_sync_push_progress", { category="none", event="DeluxeSyncPushProgress", title=_("Deluxe-Sync: Push progress to all"), reader=true,})
+    Dispatcher:registerAction("deluxe_sync_pull_progress", { category="none", event="DeluxeSyncPullProgress", title=_("Deluxe-Sync: Pull progress from all"), reader=true, separator=true,})
+end
+
+function ProgressSyncDeluxe:canManualSync()
+    return self.store ~= nil
+        and self.ui ~= nil
+        and self.ui.document ~= nil
+        and not self.preview
+        and #self.store:getEnabledServers() > 0
+end
+
+function ProgressSyncDeluxe:showManualSyncUnavailable()
+    local text
+    if self.init_error then
+        text = T(_("Deluxe-Sync failed to initialize:\n\n%1"), self.init_error)
+    elseif self.preview then
+        text = _("Preview mode is active. Exit or accept the preview before syncing.")
+    elseif not self.store or not self.ui or self.ui.document == nil then
+        text = _("Deluxe-Sync is not ready for this document.")
+    else
+        text = _("No enabled sync servers are configured.")
+    end
+    UIManager:show(InfoMessage:new{ text = text, timeout = 3 })
+end
+
+function ProgressSyncDeluxe:onDeluxeSyncToggleAutoSync(toggle)
+    if not self.store then
+        self:showManualSyncUnavailable()
+        return true
+    end
+
+    local enabled = toggle
+    if enabled == nil then enabled = self.store.data.settings.auto_sync ~= true end
+    enabled = enabled == true
+    if self.store.data.settings.auto_sync ~= enabled then
+        self.store.data.settings.auto_sync = enabled
+        self.store:flush()
+    end
+    UIManager:show(InfoMessage:new{
+        text = enabled and _("Deluxe-Sync Auto-Sync: on") or _("Deluxe-Sync Auto-Sync: off"),
+        timeout = 3,
+    })
+    return true
+end
+
+function ProgressSyncDeluxe:onDeluxeSyncPushProgress()
+    if not self:canManualSync() then
+        self:showManualSyncUnavailable()
+        return true
+    end
+    self:pushAll(true)
+    return true
+end
+
+function ProgressSyncDeluxe:onDeluxeSyncPullProgress()
+    if not self:canManualSync() then
+        self:showManualSyncUnavailable()
+        return true
+    end
+    self:pullAll(true)
+    return true
+end
+
 function ProgressSyncDeluxe:showServerOnboarding()
     local dialog
     dialog = ButtonDialog:new{
@@ -381,14 +451,14 @@ function ProgressSyncDeluxe:addToMainMenu(menu_items)
     table.insert(sub_items, {
         text = _("Push progress to all"),
         enabled_func = function()
-            return self.store ~= nil and self.ui.document ~= nil and not self.preview and #self.store:getEnabledServers() > 0
+            return self:canManualSync()
         end,
         callback = function() self:pushAll(true) end,
     })
     table.insert(sub_items, {
         text = _("Pull progress from all"),
         enabled_func = function()
-            return self.store ~= nil and self.ui.document ~= nil and not self.preview and #self.store:getEnabledServers() > 0
+            return self:canManualSync()
         end,
         callback = function() self:pullAll(true) end,
     })
@@ -2940,6 +3010,7 @@ function ProgressSyncDeluxe:scheduleAutomaticUpdateCheck()
 end
 
 function ProgressSyncDeluxe:onReaderReady()
+    self:onDispatcherRegisterActions()
     self.last_page_turn_timestamp = 0
     self.last_auto_sync_page = self.ui.getCurrentPage and self.ui:getCurrentPage() or nil
     self:scheduleAutomaticUpdateCheck()

@@ -5,6 +5,7 @@
 
 !/.gitignore
 !/README.md
+!/CHANGELOG.md
 !/deluxe-sync.koplugin/
 !/deluxe-sync.koplugin/**
 !/.github/

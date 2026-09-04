@@ -2,7 +2,7 @@
 
 Deluxe-Sync is a KOReader plugin that extends the built-in KOSync workflow to multiple independent KOReader-compatible servers.
 
-Current plugin version: **0.1.1**
+Current plugin version: **0.1.2**
 
 ## Overview
 
@@ -12,6 +12,7 @@ Key capabilities include:
 
 - Multiple independently configured KOSync servers.
 - Manual multi-server push and pull with a consolidated Pull Results view.
+- KOReader gesture/dispatcher integration for Auto-Sync On/Off, Auto-Sync Toggle, Push Progress to All, and Pull Progress from All.
 - Optional automatic syncing. **Auto-Sync Documents is OFF by default** and must be enabled by the user.
 - Independent behavior for newer and older remote positions.
 - Per-server offline/transient retry queues with queue inspection and manual retry.
@@ -47,6 +48,19 @@ When Deluxe-Sync starts with no configured servers, it offers the complimentary 
 5. Open a book, then use **Deluxe-Sync** from the reader menu.
 
 After the initial installation, future releases can be installed directly from **Deluxe-Sync → Check for Updates**.
+
+## Gesture actions
+
+Deluxe-Sync registers reader actions with KOReader's Dispatcher, so they can be assigned anywhere KOReader exposes configurable gesture or button actions.
+
+Available Deluxe-Sync actions:
+
+- **Deluxe-Sync: Set Auto-Sync** — explicitly set Auto-Sync On or Off.
+- **Deluxe-Sync: Toggle Auto-Sync** — switch Auto-Sync between enabled and disabled.
+- **Deluxe-Sync: Push progress to all** — push the current document progress to all enabled Deluxe-Sync servers.
+- **Deluxe-Sync: Pull progress from all** — query all enabled Deluxe-Sync servers for progress on the current document.
+
+Push and Pull gestures use the same multi-server logic as the reader menu. If Deluxe-Sync is not ready, preview mode is active, or no sync server is enabled, the action shows a message instead of failing silently. Auto-Sync remains **OFF by default** until the user enables it.
 
 ## Protocol and payload examples
 

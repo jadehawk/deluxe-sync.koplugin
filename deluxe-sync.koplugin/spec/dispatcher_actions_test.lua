@@ -1,0 +1,26 @@
+local file = assert(io.open("main.lua", "rb"))
+local source = file:read("*a")
+file:close()
+
+local function contains(text)
+    assert(source:find(text, 1, true), "missing expected dispatcher integration: " .. text)
+end
+
+contains('local Dispatcher = require("dispatcher")')
+contains('Dispatcher:registerAction("deluxe_sync_set_autosync"')
+contains('Dispatcher:registerAction("deluxe_sync_toggle_autosync"')
+contains('Dispatcher:registerAction("deluxe_sync_push_progress"')
+contains('Dispatcher:registerAction("deluxe_sync_pull_progress"')
+contains('category="string", event="DeluxeSyncToggleAutoSync"')
+contains('args={true, false}')
+contains('event="DeluxeSyncPushProgress"')
+contains('event="DeluxeSyncPullProgress"')
+contains('function ProgressSyncDeluxe:onDeluxeSyncToggleAutoSync(toggle)')
+contains('function ProgressSyncDeluxe:onDeluxeSyncPushProgress()')
+contains('function ProgressSyncDeluxe:onDeluxeSyncPullProgress()')
+contains('self:pushAll(true)')
+contains('self:pullAll(true)')
+contains('function ProgressSyncDeluxe:onReaderReady()')
+contains('self:onDispatcherRegisterActions()')
+
+print("dispatcher_actions_test.lua: OK")

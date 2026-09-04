@@ -43,18 +43,25 @@ Updater._safeArchivePath = safeArchivePath
 
 local function parseVersion(value)
     if type(value) ~= "string" then return nil end
-    local major, minor, patch = value:match("^v?(%d+)%.(%d+)%.(%d+)$")
-    if not major then return nil end
-    return tonumber(major), tonumber(minor), tonumber(patch)
+
+    local w, x, y, z = value:match("^v?(%d+)%.(%d+)%.(%d+)%.(%d+)$")
+    if w then
+        return tonumber(w), tonumber(x), tonumber(y), tonumber(z)
+    end
+
+    x, y, z = value:match("^v?(%d+)%.(%d+)%.(%d+)$")
+    if not x then return nil end
+    return 0, tonumber(x), tonumber(y), tonumber(z)
 end
 
 function Updater.isNewer(candidate, current)
-    local a, b, c = parseVersion(candidate)
-    local x, y, z = parseVersion(current)
-    if not a or not x then return false end
-    if a ~= x then return a > x end
-    if b ~= y then return b > y end
-    return c > z
+    local aw, ax, ay, az = parseVersion(candidate)
+    local cw, cx, cy, cz = parseVersion(current)
+    if aw == nil or cw == nil then return false end
+    if aw ~= cw then return aw > cw end
+    if ax ~= cx then return ax > cx end
+    if ay ~= cy then return ay > cy end
+    return az > cz
 end
 
 local function request(url, sink)
