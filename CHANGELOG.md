@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.1.7] - 2026-09-09
+
+### Added
+
+- Added capability-gated Stage 8 reading-statistics ingestion for enhanced servers advertising reading-statistics protocol v1.
+- Added a read-only KOReader `statistics.sqlite3` adapter that normalizes historical `page_stat_data` with book metadata, device-local dates/hours, and timezone offsets.
+- Added persistent per-server import cursors with an overlap window for safe incremental uploads after the first historical import.
+- Added Reading Statistics status to server capability/details cards.
+
+### Changed
+
+- Historical statistics upload now starts independently of progress Auto-Sync on reader ready, resume, network reconnect, successful progress pushes, capability refresh, and document close.
+- Replayed overlap rows are intentionally safe: the client high-water cursor never moves backward and the server performs deterministic event deduplication.
+- Deluxe-Sync never writes to KOReader's live statistics database; Stage 8 remains one-way KOReader to server.
+
+### Tests
+
+- Added executable Lua 5.1 coverage for read-only statistics parsing, normalization, cursor rewind/resume behavior, API wiring, capability gating, and upload lifecycle integration.
+
 ## [0.1.6] - 2026-09-09
 
 ### Added

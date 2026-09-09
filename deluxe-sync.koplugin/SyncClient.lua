@@ -253,6 +253,10 @@ function SyncClient:putAnnotations(username, userkey, payload, callback)
     self:_async("put_annotations", username, userkey, payload, callback)
 end
 
+function SyncClient:putReadingStatistics(username, userkey, payload, callback)
+    self:_async("put_reading_statistics", username, userkey, payload, callback)
+end
+
 function SyncClient:getProgress(username, userkey, document, callback)
     self:_async("get_progress", username, userkey, { document = document }, callback)
 end

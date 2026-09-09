@@ -68,6 +68,7 @@ local ResponseUtil
 local Resolver
 local LocalLibrary
 local AnnotationAdapter
+local ReadingStatisticsAdapter
 
 local ProgressSyncDeluxe = WidgetContainer:extend{
     name = "progresssyncdeluxe",
@@ -200,6 +201,7 @@ function ProgressSyncDeluxe:init()
     self.init_error = nil
     self.device_heartbeat_sent = {}
     self.annotation_sync_in_flight = {}
+    self.statistics_sync_in_flight = {}
     ensureReaderMenuOrder()
 
     -- Register first so an initialization failure cannot make the plugin vanish
@@ -219,6 +221,7 @@ function ProgressSyncDeluxe:init()
         Resolver = require("Resolver")
         LocalLibrary = require("LocalLibrary")
         AnnotationAdapter = require("AnnotationAdapter")
+        ReadingStatisticsAdapter = require("ReadingStatisticsAdapter")
         self.store = ServerStore:new()
         DiagnosticLog.configure(self.store.data.settings.logging_enabled ~= false)
         self.queue = SyncQueue:new()
@@ -606,6 +609,147 @@ function ProgressSyncDeluxe:serverSupportsAnnotations(server)
         and (tonumber(capabilities.annotations_version) or 0) >= 1
 end
 
+function ProgressSyncDeluxe:serverSupportsReadingStatistics(server)
+    local capabilities = server and server.capabilities or {}
+    local direction = capabilities.reading_statistics_direction
+    return capabilities.reading_statistics == true
+        and capabilities.reading_statistics_events == true
+        and (tonumber(capabilities.reading_statistics_version) or 0) >= 1
+        and (direction == nil or direction == "client_to_server")
+end
+
+function ProgressSyncDeluxe:cacheReadingStatisticsCapabilities(server, enhanced_capabilities)
+    local version = type(enhanced_capabilities) == "table" and tonumber(enhanced_capabilities.reading_statistics_version) or nil
+    local events_supported = type(enhanced_capabilities) == "table" and enhanced_capabilities.reading_statistics_events == true
+    local direction = type(enhanced_capabilities) == "table" and enhanced_capabilities.reading_statistics_direction or nil
+    local supported = type(enhanced_capabilities) == "table"
+        and enhanced_capabilities.reading_statistics == true
+        and events_supported
+        and (version or 0) >= 1
+        and (direction == nil or direction == "client_to_server")
+    self.store:setCapability(server.id, "reading_statistics", supported)
+    self.store:setCapability(server.id, "reading_statistics_version", version)
+    self.store:setCapability(server.id, "reading_statistics_events", events_supported)
+    self.store:setCapability(server.id, "reading_statistics_direction", direction)
+    return supported
+end
+
+function ProgressSyncDeluxe:refreshReadingStatisticsCapabilities(server, client)
+    client = client or self:newClient(server)
+    local ok, status, body = client:capabilities()
+    local data = decode(body)
+    if ok and (status == 404 or status == 405) then
+        return self:cacheReadingStatisticsCapabilities(server, nil)
+    end
+    if not ok or status ~= 200 or type(data) ~= "table" or type(data.capabilities) ~= "table" then
+        return false
+    end
+    return self:cacheReadingStatisticsCapabilities(server, data.capabilities)
+end
+
+function ProgressSyncDeluxe:syncReadingStatisticsForServer(server, callback)
+    callback = callback or function() end
+    if not self.store or not ReadingStatisticsAdapter or not server or server.enabled == false then
+        callback(false, nil, "Reading statistics sync is unavailable")
+        return
+    end
+    local sync_key = tostring(server.id or server.url or "server")
+    if self.statistics_sync_in_flight[sync_key] then
+        callback(false, nil, "Reading statistics sync is already in progress")
+        return
+    end
+
+    local client = self:newClient(server)
+    local capabilities = server.capabilities or {}
+    if capabilities.reading_statistics == nil then
+        self:refreshReadingStatisticsCapabilities(server, client)
+    end
+    if not self:serverSupportsReadingStatistics(server) then
+        callback(false, nil, "Reading statistics are not supported")
+        return
+    end
+
+    self.statistics_sync_in_flight[sync_key] = true
+    local stored_state = self.store:getReadingStatisticsState(server.id)
+    local high_water = {
+        start_time = tonumber(stored_state.start_time) or 0,
+        id_book = tonumber(stored_state.id_book) or 0,
+        page = tonumber(stored_state.page) or -1,
+        initial_complete = stored_state.initial_complete == true,
+    }
+    local scan_cursor = ReadingStatisticsAdapter.makeScanCursor(stored_state)
+    local registration = self:getDeviceRegistrationPayload()
+
+    local function cursorIsAfter(candidate, current)
+        local candidate_time = tonumber(candidate.start_time) or 0
+        local current_time = tonumber(current.start_time) or 0
+        if candidate_time ~= current_time then return candidate_time > current_time end
+        local candidate_book = tonumber(candidate.id_book) or 0
+        local current_book = tonumber(current.id_book) or 0
+        if candidate_book ~= current_book then return candidate_book > current_book end
+        return (tonumber(candidate.page) or -1) > (tonumber(current.page) or -1)
+    end
+
+    local function finish(ok, status, message)
+        self.statistics_sync_in_flight[sync_key] = nil
+        if DiagnosticLog then
+            DiagnosticLog.log("reading statistics sync", serverLabel(server), "ok", ok and true or false, "status", status or "nil", "message", message or "")
+        end
+        callback(ok, status, message)
+    end
+
+    local uploadNext
+    uploadNext = function(cursor)
+        local batch, read_error = ReadingStatisticsAdapter.readBatch(cursor, ReadingStatisticsAdapter.DEFAULT_BATCH_SIZE)
+        if not batch then
+            finish(false, nil, read_error or "Unable to read KOReader statistics")
+            return
+        end
+        if batch.missing then
+            finish(true, 200, "KOReader statistics database is not present")
+            return
+        end
+        if #batch.events == 0 then
+            high_water.initial_complete = true
+            self.store:saveReadingStatisticsState(server.id, high_water)
+            finish(true, 200, "Reading statistics are up to date")
+            return
+        end
+
+        client:putReadingStatistics(server.username, server.userkey, {
+            legacy_device_id = tostring(self.store.data.device_id),
+            koreader_device_id = registration.koreader_device_id,
+            device = tostring(Device.model or "KOReader device"),
+            source_type = ReadingStatisticsAdapter.SOURCE_TYPE,
+            source_schema_version = batch.source_schema_version,
+            events = batch.events,
+        }, function(ok, status, body)
+            if not ok or status ~= 200 then
+                finish(false, status, serverResponseMessage(body) or body or "Reading statistics upload failed")
+                return
+            end
+            if cursorIsAfter(batch.cursor, high_water) then
+                high_water.start_time = batch.cursor.start_time
+                high_water.id_book = batch.cursor.id_book
+                high_water.page = batch.cursor.page
+            end
+            self.store:saveReadingStatisticsState(server.id, high_water)
+            uploadNext(batch.cursor)
+        end)
+    end
+
+    uploadNext(scan_cursor)
+end
+
+function ProgressSyncDeluxe:syncReadingStatisticsForAll()
+    if not self.store or not NetworkMgr:isOnline() then return end
+    for index, server in ipairs(self.store:getEnabledServers()) do
+        UIManager:scheduleIn((index - 1) * 0.2, function()
+            self:syncReadingStatisticsForServer(server)
+        end)
+    end
+end
+
 function ProgressSyncDeluxe:getLocalAnnotations()
     local annotation_module = self.ui and self.ui.annotation
     if annotation_module and type(annotation_module.annotations) == "table" then
@@ -776,6 +920,7 @@ function ProgressSyncDeluxe:getDeviceRegistrationPayload()
             logical_books = true,
             device_registration = true,
             annotations = true,
+            reading_statistics = true,
         },
     }
 end
@@ -904,6 +1049,7 @@ function ProgressSyncDeluxe:pushAll(interactive)
                     end
                     self:heartbeatDevice(server, nil, false)
                     self:syncAnnotationsForServer(server, document)
+                    self:syncReadingStatisticsForServer(server)
                     done()
                 elseif is_metadata_probe and (status == 400 or status == 404 or status == 422) then
                     if DiagnosticLog then DiagnosticLog.log("metadata fallback", serverLabel(server), "status", status, "body", body) end
@@ -2719,7 +2865,7 @@ function ProgressSyncDeluxe:showStatusCard(title, rows, actions)
     return dialog
 end
 
-function ProgressSyncDeluxe:showServerTestResult(server, listing_supported, book_count, recovery_supported, logical_supported, rich_supported, device_supported, device_registered, annotation_supported)
+function ProgressSyncDeluxe:showServerTestResult(server, listing_supported, book_count, recovery_supported, logical_supported, rich_supported, device_supported, device_registered, annotation_supported, reading_statistics_supported)
     local listing_value = listing_supported
         and T(_("Supported (%1 Books)"), book_count or 0)
         or _("Not Supported")
@@ -2734,6 +2880,7 @@ function ProgressSyncDeluxe:showServerTestResult(server, listing_supported, book
         { label = _("Rich Position"), value = rich_supported and _("Supported") or _("Not Supported") },
         { label = _("Device Identity"), value = device_value },
         { label = _("Annotations"), value = annotation_supported and _("Supported") or _("Not Supported") },
+        { label = _("Reading Statistics"), value = reading_statistics_supported and _("Supported") or _("Not Supported") },
     })
 end
 
@@ -2767,6 +2914,7 @@ function ProgressSyncDeluxe:testServer(server)
     local annotation_supported = type(enhanced_capabilities) == "table"
         and enhanced_capabilities.annotations == true
         and (annotation_version or 0) >= 1
+    local reading_statistics_supported = self:cacheReadingStatisticsCapabilities(server, enhanced_capabilities)
     self.store:setCapability(server.id, "logical_books", logical_supported)
     self.store:setCapability(server.id, "logical_library", logical_supported)
     self.store:setCapability(server.id, "rich_progress", rich_supported)
@@ -2786,11 +2934,12 @@ function ProgressSyncDeluxe:testServer(server)
             if list_ok and list_status == 200 and data and type(data.documents) == "table" then
                 self.store:setCapability(server.id, "document_listing", true)
                 self.store:setKnownDocuments(server.id, data.documents)
-                self:showServerTestResult(server, true, #data.documents, recovery_supported, logical_supported, rich_supported, device_supported, device_registered, annotation_supported)
+                self:showServerTestResult(server, true, #data.documents, recovery_supported, logical_supported, rich_supported, device_supported, device_registered, annotation_supported, reading_statistics_supported)
             else
                 self.store:setCapability(server.id, "document_listing", false)
-                self:showServerTestResult(server, false, 0, recovery_supported, logical_supported, rich_supported, device_supported, device_registered, annotation_supported)
+                self:showServerTestResult(server, false, 0, recovery_supported, logical_supported, rich_supported, device_supported, device_registered, annotation_supported, reading_statistics_supported)
             end
+            if reading_statistics_supported then self:syncReadingStatisticsForServer(server) end
         end)
     end
 
@@ -2809,6 +2958,7 @@ function ProgressSyncDeluxe:showServer(server)
     local logical = caps.logical_library == true and _("Supported") or (caps.logical_library == false and _("Not supported") or _("Unknown"))
     local rich = caps.rich_progress == true and _("Supported") or (caps.rich_progress == false and _("Not supported") or _("Unknown"))
     local annotations = caps.annotations == true and _("Supported") or (caps.annotations == false and _("Not supported") or _("Unknown"))
+    local reading_statistics = caps.reading_statistics == true and _("Supported") or (caps.reading_statistics == false and _("Not supported") or _("Unknown"))
     local device_identity = caps.device_registration == true
         and (caps.device_registered == true and _("Registered") or _("Supported"))
         or (caps.device_registration == false and _("Not supported") or _("Unknown"))
@@ -2881,6 +3031,7 @@ function ProgressSyncDeluxe:showServer(server)
     addStatusRow(_("Rich Position"), rich)
     addStatusRow(_("Device Identity"), device_identity)
     addStatusRow(_("Annotations"), annotations)
+    addStatusRow(_("Reading Statistics"), reading_statistics)
     addStatusRow(_("Matching Method"), matching)
     addStatusRow(_("Account Recovery"), recovery)
 
@@ -3664,6 +3815,9 @@ function ProgressSyncDeluxe:onReaderReady()
     self.last_page_turn_timestamp = 0
     self.last_auto_sync_page = self.ui.getCurrentPage and self.ui:getCurrentPage() or nil
     self:scheduleAutomaticUpdateCheck()
+    if NetworkMgr:isOnline() then
+        UIManager:scheduleIn(2, function() self:syncReadingStatisticsForAll() end)
+    end
     if self:canAutoSync() then
         UIManager:nextTick(function() self:autoSyncPull() end)
     end
@@ -3677,6 +3831,9 @@ function ProgressSyncDeluxe:onPageUpdate(page)
 end
 
 function ProgressSyncDeluxe:onResume()
+    if NetworkMgr:isOnline() then
+        UIManager:scheduleIn(1.5, function() self:syncReadingStatisticsForAll() end)
+    end
     if not self:canAutoSync() then return end
     UIManager:scheduleIn(1, function() self:autoSyncPull() end)
 end
@@ -3687,6 +3844,7 @@ end
 
 function ProgressSyncDeluxe:onNetworkConnected()
     self:scheduleAutomaticUpdateCheck()
+    UIManager:scheduleIn(1, function() self:syncReadingStatisticsForAll() end)
     if not self:canAutoSync() then return end
     UIManager:scheduleIn(0.5, function()
         self:retryQueue(false, function()
@@ -3698,6 +3856,7 @@ end
 function ProgressSyncDeluxe:onCloseDocument()
     if self.preview then self.preview = nil; return end
     self:autoSyncPush()
+    if NetworkMgr:isOnline() then self:syncReadingStatisticsForAll() end
 end
 
 return ProgressSyncDeluxe

@@ -15,6 +15,7 @@ local defaults = {
     aliases = {},
     known_documents = {},
     annotation_sync = {},
+    reading_statistics_sync = {},
     settings = {
         auto_sync = false,
         sync_forward = "prompt",
@@ -43,6 +44,7 @@ function ServerStore:new()
     o.data.aliases = o.data.aliases or {}
     o.data.known_documents = o.data.known_documents or {}
     o.data.annotation_sync = o.data.annotation_sync or {}
+    o.data.reading_statistics_sync = o.data.reading_statistics_sync or {}
     o.data.settings = o.data.settings or deepCopy(defaults.settings)
     if o.data.settings.auto_sync == nil then o.data.settings.auto_sync = false end
     if o.data.settings.sync_forward == nil then o.data.settings.sync_forward = "prompt" end
@@ -133,6 +135,10 @@ function ServerStore:upsertServer(server)
         device_registered = nil,
         annotations = nil,
         annotations_version = nil,
+        reading_statistics = nil,
+        reading_statistics_version = nil,
+        reading_statistics_events = nil,
+        reading_statistics_direction = nil,
     }
     for i, existing in ipairs(self.data.servers) do
         if existing.id == server.id then
@@ -153,6 +159,7 @@ function ServerStore:removeServer(id)
     end
     self.data.known_documents[id] = nil
     self.data.annotation_sync[id] = nil
+    self.data.reading_statistics_sync[id] = nil
     for canonical_document, aliases in pairs(self.data.aliases or {}) do
         local filtered = {}
         for _, alias in ipairs(aliases) do
@@ -247,6 +254,31 @@ function ServerStore:saveAnnotationState(server_id, document, state)
     self.data.annotation_sync = self.data.annotation_sync or {}
     self.data.annotation_sync[server_id] = self.data.annotation_sync[server_id] or {}
     self.data.annotation_sync[server_id][document] = state
+    self:flush()
+    return true
+end
+
+function ServerStore:getReadingStatisticsState(server_id)
+    if not server_id then
+        return { start_time = 0, id_book = 0, page = -1, initial_complete = false }
+    end
+    self.data.reading_statistics_sync = self.data.reading_statistics_sync or {}
+    local state = self.data.reading_statistics_sync[server_id]
+    if type(state) ~= "table" then
+        state = { start_time = 0, id_book = 0, page = -1, initial_complete = false }
+        self.data.reading_statistics_sync[server_id] = state
+    end
+    state.start_time = math.max(0, math.floor(tonumber(state.start_time) or 0))
+    state.id_book = math.max(0, math.floor(tonumber(state.id_book) or 0))
+    state.page = math.floor(tonumber(state.page) or -1)
+    state.initial_complete = state.initial_complete == true
+    return state
+end
+
+function ServerStore:saveReadingStatisticsState(server_id, state)
+    if not server_id or type(state) ~= "table" then return false end
+    self.data.reading_statistics_sync = self.data.reading_statistics_sync or {}
+    self.data.reading_statistics_sync[server_id] = state
     self:flush()
     return true
 end
