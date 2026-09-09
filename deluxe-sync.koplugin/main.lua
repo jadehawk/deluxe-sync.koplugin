@@ -1,4 +1,5 @@
 local Device = require("device")
+local Version = require("version")
 local Dispatcher = require("dispatcher")
 local NetworkMgr = require("ui/network/manager")
 local Blitbuffer = require("ffi/blitbuffer")
@@ -196,6 +197,7 @@ end
 function ProgressSyncDeluxe:init()
     self.preview = nil
     self.init_error = nil
+    self.device_heartbeat_sent = {}
     ensureReaderMenuOrder()
 
     -- Register first so an initialization failure cannot make the plugin vanish
@@ -557,6 +559,101 @@ function ProgressSyncDeluxe:getCurrentProgress()
     return self.ui.rolling:getLastProgress(), self.ui.rolling:getLastPercent()
 end
 
+function ProgressSyncDeluxe:getRichPosition(progress, percentage)
+    local ratio = tonumber(percentage)
+    if ratio == nil then return nil end
+    ratio = math.max(0, math.min(1, ratio))
+    local position = { pctQ = math.floor(ratio * 1000000 + 0.5) }
+
+    local document = self.ui and self.ui.document
+    if document and document.getCurrentPage then
+        local page = tonumber(document:getCurrentPage())
+        if page and page >= 0 and page <= 65535 then position.page = math.floor(page) end
+    elseif self.ui and self.ui.getCurrentPage then
+        local page = tonumber(self.ui:getCurrentPage())
+        if page and page >= 0 and page <= 65535 then position.page = math.floor(page) end
+    end
+    if document and document.getPageCount then
+        local pages = tonumber(document:getPageCount())
+        if pages and pages > 0 and pages <= 65535 then position.pages = math.floor(pages) end
+    end
+
+    if document and not document.info.has_pages and progress ~= nil then
+        local xpath = tostring(progress)
+        if xpath ~= "" and #xpath <= 120 then position.xpath = xpath end
+    end
+    return position
+end
+
+function ProgressSyncDeluxe:serverSupportsRichProgress(server)
+    local capabilities = server and server.capabilities or {}
+    return capabilities.rich_progress == true
+        and (tonumber(capabilities.rich_position_version) or 0) >= 1
+end
+
+function ProgressSyncDeluxe:serverSupportsDeviceRegistration(server)
+    local capabilities = server and server.capabilities or {}
+    return capabilities.device_registration == true
+        and (tonumber(capabilities.device_registration_version) or 0) >= 1
+end
+
+function ProgressSyncDeluxe:getDeviceRegistrationPayload()
+    local koreader_device_id
+    if G_reader_settings and G_reader_settings.readSetting then
+        koreader_device_id = G_reader_settings:readSetting("device_id")
+        if koreader_device_id ~= nil then koreader_device_id = tostring(koreader_device_id) end
+    end
+
+    local koreader_version
+    if Version and Version.getCurrentRevision then
+        local ok, value = pcall(Version.getCurrentRevision, Version)
+        if ok and value ~= nil then koreader_version = tostring(value) end
+    end
+
+    local platform_parts = {}
+    if jit and jit.os then table.insert(platform_parts, tostring(jit.os)) end
+    if jit and jit.arch then table.insert(platform_parts, tostring(jit.arch)) end
+
+    return {
+        legacy_device_id = tostring(self.store.data.device_id),
+        koreader_device_id = koreader_device_id,
+        display_name = tostring(Device.model or "KOReader device"),
+        model = tostring(Device.model or "KOReader device"),
+        platform = #platform_parts > 0 and table.concat(platform_parts, "/") or nil,
+        koreader_version = koreader_version,
+        deluxe_sync_version = PLUGIN_VERSION,
+        capabilities = {
+            standard_kosync = true,
+            rich_progress = true,
+            logical_books = true,
+            device_registration = true,
+        },
+    }
+end
+
+function ProgressSyncDeluxe:heartbeatDevice(server, client, force, callback)
+    callback = callback or function() end
+    if not self:serverSupportsDeviceRegistration(server) then
+        callback(false, nil, nil)
+        return
+    end
+    if not force and self.device_heartbeat_sent[server.id] then
+        callback(true, 200, nil)
+        return
+    end
+
+    client = client or self:newClient(server)
+    client:registerDevice(server.username, server.userkey, self:getDeviceRegistrationPayload(), function(ok, status, body)
+        local registered = ok and status == 200
+        self.store:setCapability(server.id, "device_registered", registered)
+        if registered then self.device_heartbeat_sent[server.id] = true end
+        if DiagnosticLog then
+            DiagnosticLog.log("device heartbeat", serverLabel(server), "status", status or "nil", "registered", registered)
+        end
+        callback(registered, status, body)
+    end)
+end
+
 function ProgressSyncDeluxe:newClient(server)
     return SyncClient:new{
         custom_url = server.url,
@@ -588,6 +685,7 @@ function ProgressSyncDeluxe:pushAll(interactive)
     local canonical_document = self:getDocumentDigest()
     local progress, percentage = self:getCurrentProgress()
     local metadata = self:getMetadata()
+    local rich_position = self:getRichPosition(progress, percentage)
     local servers = self.store:getEnabledServers()
     local pending = #servers
     local success, queued, failed, not_tracked = 0, 0, 0, 0
@@ -618,6 +716,9 @@ function ProgressSyncDeluxe:pushAll(interactive)
         local capabilities = server.capabilities or {}
         if server.metadata_enabled ~= false and capabilities.metadata_compatible ~= false then
             payload.metadata = metadata
+        end
+        if self:serverSupportsRichProgress(server) and rich_position then
+            payload.position = rich_position
         end
 
         local function finalizeFailure(status, body, failed_payload)
@@ -652,6 +753,7 @@ function ProgressSyncDeluxe:pushAll(interactive)
                     if is_metadata_probe then
                         self.store:setCapability(server.id, "metadata_compatible", true)
                     end
+                    self:heartbeatDevice(server, nil, false)
                     done()
                 elseif is_metadata_probe and (status == 400 or status == 404 or status == 422) then
                     if DiagnosticLog then DiagnosticLog.log("metadata fallback", serverLabel(server), "status", status, "body", body) end
@@ -663,6 +765,9 @@ function ProgressSyncDeluxe:pushAll(interactive)
                         device = current_payload.device,
                         device_id = current_payload.device_id,
                     }
+                    if self:serverSupportsRichProgress(server) and current_payload.position ~= nil then
+                        fallback_payload.position = current_payload.position
+                    end
                     send(fallback_payload, false)
                 else
                     finalizeFailure(status, body, current_payload)
@@ -680,6 +785,7 @@ function ProgressSyncDeluxe:queueCurrentProgress()
     local progress, percentage = self:getCurrentProgress()
     if not canonical_document or progress == nil then return end
     local metadata = self:getMetadata()
+    local rich_position = self:getRichPosition(progress, percentage)
     for unused_index, server in ipairs(self.store:getEnabledServers()) do
         local document = self:getServerDocumentDigest(server) or canonical_document
         local payload = {
@@ -692,6 +798,9 @@ function ProgressSyncDeluxe:queueCurrentProgress()
         local capabilities = server.capabilities or {}
         if server.metadata_enabled ~= false and capabilities.metadata_compatible ~= false then
             payload.metadata = metadata
+        end
+        if self:serverSupportsRichProgress(server) and rich_position then
+            payload.position = rich_position
         end
         self:queueForServer(server, {
             server_id = server.id,
@@ -763,20 +872,27 @@ function ProgressSyncDeluxe:retryQueue(interactive, complete_callback)
         if server and server.enabled ~= false then
             pending = pending + 1
             local payload = item.payload
-            if payload.metadata ~= nil and (server.metadata_enabled == false or (server.capabilities and server.capabilities.metadata_compatible == false)) then
-                payload = {
+            local strip_metadata = payload.metadata ~= nil
+                and (server.metadata_enabled == false or (server.capabilities and server.capabilities.metadata_compatible == false))
+            local strip_position = payload.position ~= nil and not self:serverSupportsRichProgress(server)
+            if strip_metadata or strip_position then
+                local sanitized = {
                     document = payload.document,
                     progress = payload.progress,
                     percentage = payload.percentage,
                     device = payload.device,
                     device_id = payload.device_id,
                 }
+                if not strip_metadata then sanitized.metadata = payload.metadata end
+                if not strip_position then sanitized.position = payload.position end
+                payload = sanitized
                 item.payload = payload
                 self.queue:save()
             end
             self:newClient(server):updateProgress(server.username, server.userkey, payload, function(ok, status, body)
                 if ok and (status == 200 or status == 202) then
                     self.queue:remove(item.server_id, item.document)
+                    self:heartbeatDevice(server, nil, false)
                 elseif isBookNotFoundResponse(status, body) then
                     self.queue:remove(item.server_id, item.document)
                     if DiagnosticLog then DiagnosticLog.log("queue drop not tracked", serverLabel(server), "document", item.document, "status", status, "body", body) end
@@ -914,6 +1030,7 @@ function ProgressSyncDeluxe:pullAll(interactive)
                 progress = data.progress,
                 group_key = server.ui_test_group_key,
                 percentage = display_percentage,
+                position = type(data.position) == "table" and data.position or nil,
                 timestamp = data.timestamp,
                 device = data.device,
                 device_id = data.device_id,
@@ -1154,8 +1271,12 @@ function ProgressSyncDeluxe:applyRemotePosition(group)
         return
     end
 
-    local percent = math.floor((tonumber(group.percentage) or 0) * 100 + 0.5)
-    if DiagnosticLog then DiagnosticLog.log("pull apply", "mode", "percentage fallback", "percentage", group.percentage or "", "percent", percent) end
+    local ratio = tonumber(group.percentage) or 0
+    if type(group.position) == "table" and tonumber(group.position.pctQ) then
+        ratio = math.max(0, math.min(1, tonumber(group.position.pctQ) / 1000000))
+    end
+    local percent = math.floor(ratio * 100 + 0.5)
+    if DiagnosticLog then DiagnosticLog.log("pull apply", "mode", "portable percentage fallback", "percentage", ratio, "percent", percent) end
     self.ui:handleEvent(Event:new("GotoPercent", percent))
 end
 
@@ -2441,16 +2562,20 @@ function ProgressSyncDeluxe:showStatusCard(title, rows, actions)
     return dialog
 end
 
-function ProgressSyncDeluxe:showServerTestResult(server, listing_supported, book_count, recovery_supported, logical_supported)
+function ProgressSyncDeluxe:showServerTestResult(server, listing_supported, book_count, recovery_supported, logical_supported, rich_supported, device_supported, device_registered)
     local listing_value = listing_supported
         and T(_("Supported (%1 Books)"), book_count or 0)
         or _("Not Supported")
+    local device_value = _("Not Supported")
+    if device_supported then device_value = device_registered and _("Registered") or _("Supported") end
     self:showStatusCard(_("Deluxe-Sync"), {
         { label = _("Server"), value = serverLabel(server) },
         { label = _("Status"), value = _("Connected") },
         { label = _("Library Listing"), value = listing_value },
         { label = _("Account Recovery"), value = recovery_supported and _("Supported") or _("Not Supported") },
         { label = _("Linked Books"), value = logical_supported and _("Supported") or _("Not Supported") },
+        { label = _("Rich Position"), value = rich_supported and _("Supported") or _("Not Supported") },
+        { label = _("Device Identity"), value = device_value },
     })
 end
 
@@ -2472,23 +2597,45 @@ function ProgressSyncDeluxe:testServer(server)
     local capability_data = decode(capability_body)
     local enhanced_capabilities = capability_ok and capability_status == 200 and type(capability_data) == "table" and capability_data.capabilities or nil
     local logical_supported = type(enhanced_capabilities) == "table" and enhanced_capabilities.logical_books == true and enhanced_capabilities.logical_library == true
+    local rich_position_version = type(enhanced_capabilities) == "table" and tonumber(enhanced_capabilities.rich_position_version) or nil
+    local rich_supported = type(enhanced_capabilities) == "table"
+        and enhanced_capabilities.rich_progress == true
+        and (rich_position_version or 0) >= 1
+    local device_registration_version = type(enhanced_capabilities) == "table" and tonumber(enhanced_capabilities.device_registration_version) or nil
+    local device_supported = type(enhanced_capabilities) == "table"
+        and enhanced_capabilities.device_registration == true
+        and (device_registration_version or 0) >= 1
     self.store:setCapability(server.id, "logical_books", logical_supported)
     self.store:setCapability(server.id, "logical_library", logical_supported)
+    self.store:setCapability(server.id, "rich_progress", rich_supported)
+    self.store:setCapability(server.id, "rich_position_version", rich_position_version)
+    self.store:setCapability(server.id, "device_registration", device_supported)
+    self.store:setCapability(server.id, "device_registration_version", device_registration_version)
     if recovery_supported and server.email and server.email ~= "" then
         local email_ok, email_status, email_body = client:setRecoveryEmail(server.username, server.userkey, server.email)
         DiagnosticLog.log("recovery email enrollment result", server.url or "", "username", server.username or "", "email", server.email, "status", email_status or "nil", "ok", email_ok, "body", email_body or "")
     end
-    client:listDocuments(server.username, server.userkey, function(list_ok, list_status, body)
-        local data = decode(body)
-        if list_ok and list_status == 200 and data and type(data.documents) == "table" then
-            self.store:setCapability(server.id, "document_listing", true)
-            self.store:setKnownDocuments(server.id, data.documents)
-            self:showServerTestResult(server, true, #data.documents, recovery_supported, logical_supported)
-        else
-            self.store:setCapability(server.id, "document_listing", false)
-            self:showServerTestResult(server, false, 0, recovery_supported, logical_supported)
-        end
-    end)
+
+    local function finishTest(device_registered)
+        client:listDocuments(server.username, server.userkey, function(list_ok, list_status, body)
+            local data = decode(body)
+            if list_ok and list_status == 200 and data and type(data.documents) == "table" then
+                self.store:setCapability(server.id, "document_listing", true)
+                self.store:setKnownDocuments(server.id, data.documents)
+                self:showServerTestResult(server, true, #data.documents, recovery_supported, logical_supported, rich_supported, device_supported, device_registered)
+            else
+                self.store:setCapability(server.id, "document_listing", false)
+                self:showServerTestResult(server, false, 0, recovery_supported, logical_supported, rich_supported, device_supported, device_registered)
+            end
+        end)
+    end
+
+    if device_supported then
+        self:heartbeatDevice(server, client, true, function(registered) finishTest(registered) end)
+    else
+        self.store:setCapability(server.id, "device_registered", false)
+        finishTest(false)
+    end
 end
 
 function ProgressSyncDeluxe:showServer(server)
@@ -2496,6 +2643,10 @@ function ProgressSyncDeluxe:showServer(server)
     local listing = caps.document_listing == true and _("Supported") or (caps.document_listing == false and _("Not supported") or _("Unknown"))
     local recovery = caps.account_recovery == true and _("Supported") or (caps.account_recovery == false and _("Not supported") or _("Unknown"))
     local logical = caps.logical_library == true and _("Supported") or (caps.logical_library == false and _("Not supported") or _("Unknown"))
+    local rich = caps.rich_progress == true and _("Supported") or (caps.rich_progress == false and _("Not supported") or _("Unknown"))
+    local device_identity = caps.device_registration == true
+        and (caps.device_registered == true and _("Registered") or _("Supported"))
+        or (caps.device_registration == false and _("Not supported") or _("Unknown"))
     local matching = server.checksum_method == "filename" and _("Filename") or _("Binary")
     local enabled = server.enabled ~= false
     local buttons = {
@@ -2562,6 +2713,8 @@ function ProgressSyncDeluxe:showServer(server)
     addStatusRow(_("Enabled"), enabled and _("Yes") or _("No"))
     addStatusRow(_("Library Listing"), listing)
     addStatusRow(_("Linked Books"), logical)
+    addStatusRow(_("Rich Position"), rich)
+    addStatusRow(_("Device Identity"), device_identity)
     addStatusRow(_("Matching Method"), matching)
     addStatusRow(_("Account Recovery"), recovery)
 

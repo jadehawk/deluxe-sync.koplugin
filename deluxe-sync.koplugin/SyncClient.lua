@@ -237,6 +237,10 @@ function SyncClient:updateProgress(username, userkey, payload, callback)
     self:_async("update_progress", username, userkey, payload, callback)
 end
 
+function SyncClient:registerDevice(username, userkey, payload, callback)
+    self:_async("register_device", username, userkey, payload, callback)
+end
+
 function SyncClient:getProgress(username, userkey, document, callback)
     self:_async("get_progress", username, userkey, { document = document }, callback)
 end

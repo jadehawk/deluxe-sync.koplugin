@@ -1,5 +1,38 @@
 # Changelog
 
+## [0.1.5] - 2026-09-09
+
+### Added
+
+- Added capability-gated enhanced device registration for servers advertising device-registration v1.
+- Added KOReader UUID, model/platform, KOReader version, Deluxe-Sync version, and client capability reporting while preserving the existing Deluxe device ID.
+- Added once-per-session device heartbeat after successful sync and forced registration during Refresh / Test Capabilities.
+- Added Device Identity status to server capability/details cards.
+
+### Changed
+
+- Existing Deluxe and KOReader identities can now be associated by a compatible server as one durable physical device without changing behavior on standard KOSync servers.
+
+### Tests
+
+- Added device-registration protocol regression coverage alongside the full Lua 5.1 suite.
+
+## [0.1.4] - 2026-09-08
+
+### Added
+
+- Added capability-gated rich reading positions for enhanced servers: universal `pctQ`, KOReader page/page-count hints, and native rolling XPointer when available.
+- Added rich-position support reporting to the server capability test/details UI.
+
+### Changed
+
+- Alternate linked-book pulls now prefer the portable rich `pctQ` fallback while exact same-file pulls continue using KOReader's native page/XPointer.
+- Queued and metadata-fallback requests preserve rich position only for servers that advertise `rich_progress` version 1 or newer; ordinary KOSync servers keep the legacy payload.
+
+### Tests
+
+- Added rich-progress protocol regression coverage and resolver coverage for retaining the newest representative rich position.
+
 ## [0.1.3] - 2026-09-08
 
 ### Added

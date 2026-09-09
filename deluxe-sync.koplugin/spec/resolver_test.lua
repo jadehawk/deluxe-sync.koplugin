@@ -3,9 +3,9 @@ package.path = "./?.lua;" .. package.path
 local Resolver = require("Resolver")
 
 local results = {
-    { ok = true, progress = "xp-a", percentage = 0.42, timestamp = 100, server = { name = "A" } },
-    { ok = true, progress = "xp-a", percentage = 0.42, timestamp = 110, server = { name = "B" } },
-    { ok = true, progress = "xp-b", percentage = 0.61, timestamp = 120, server = { name = "C" } },
+    { ok = true, progress = "xp-a", percentage = 0.42, position = { pctQ = 410000 }, timestamp = 100, server = { name = "A" } },
+    { ok = true, progress = "xp-a", percentage = 0.42, position = { pctQ = 420000 }, timestamp = 110, server = { name = "B" } },
+    { ok = true, progress = "xp-b", percentage = 0.61, position = { pctQ = 610000 }, timestamp = 120, server = { name = "C" } },
     { ok = false, status = 503, server = { name = "D" } },
 }
 
@@ -13,6 +13,7 @@ local groups = Resolver.group(results)
 assert(#groups == 2, "expected two distinct progress groups")
 assert(groups[1].progress == "xp-b", "newest group must be first")
 assert(groups[2].progress == "xp-a", "matching positions must be grouped")
+assert(groups[2].position and groups[2].position.pctQ == 420000, "group must keep rich position from its newest representative")
 assert(#groups[2].servers == 2, "two servers should share xp-a")
 assert(#Resolver.failures(results) == 1, "one failure expected")
 assert(Resolver.samePosition({ results[1], results[2] }) == true, "same position should agree")

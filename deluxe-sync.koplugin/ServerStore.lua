@@ -124,6 +124,11 @@ function ServerStore:upsertServer(server)
         account_recovery = nil,
         logical_books = nil,
         logical_library = nil,
+        rich_progress = nil,
+        rich_position_version = nil,
+        device_registration = nil,
+        device_registration_version = nil,
+        device_registered = nil,
     }
     for i, existing in ipairs(self.data.servers) do
         if existing.id == server.id then

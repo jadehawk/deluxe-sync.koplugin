@@ -2,7 +2,9 @@
 
 Deluxe-Sync is a KOReader plugin that extends the built-in KOSync workflow to multiple independent KOReader-compatible servers.
 
-Current plugin version: **0.1.3**
+Current plugin version: **0.1.5**
+
+- Enhanced Techy-Notes servers can register one durable physical device using the existing Deluxe device ID plus KOReader UUID/model/platform/version metadata; unsupported KOSync servers are unchanged.
 
 ## Overview
 
@@ -123,6 +125,12 @@ When metadata is enabled for a compatible server, Deluxe-Sync extends the standa
 ```
 
 The metadata extension currently contains exactly `filename`, `title`, and `authors`. If metadata is disabled or the server is detected as metadata-incompatible, Deluxe-Sync falls back to the standard payload.
+
+### Rich reading position on capable servers
+
+When `/api/v1/capabilities` advertises `rich_progress: true` and `rich_position_version >= 1`, Deluxe-Sync also sends a format-neutral `position` object. `pctQ` is always derived from KOReader's percentage. Real KOReader page/page-count hints are included when available, and reflowable documents include KOReader's native XPointer when it fits the protocol limit. Deluxe-Sync does not fabricate EPUB-only spine/paragraph/anchor fields for formats that do not expose them reliably.
+
+Exact same-file pulls still use KOReader's native `progress` value. When the remote record belongs to an alternate linked version, Deluxe-Sync uses `pctQ` as the portable fallback rather than applying a foreign page number or XPointer. Servers that do not advertise rich progress continue receiving the original standard KOSync payload.
 
 ### Document matching
 

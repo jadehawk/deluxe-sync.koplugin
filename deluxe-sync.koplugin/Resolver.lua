@@ -15,6 +15,7 @@ function Resolver.group(results)
                 group = {
                     progress = result.progress,
                     percentage = result.percentage,
+                    position = result.position,
                     timestamp = result.timestamp or 0,
                     servers = {},
                 }
@@ -25,6 +26,7 @@ function Resolver.group(results)
             if (result.timestamp or 0) > (group.timestamp or 0) then
                 group.timestamp = result.timestamp
                 group.percentage = result.percentage
+                group.position = result.position
             end
         end
     end
