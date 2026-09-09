@@ -159,6 +159,11 @@ function SyncClient:recoveryCapability()
     return self:_publicCall("recovery_capability", {})
 end
 
+function SyncClient:capabilities()
+    DiagnosticLog.log("capability request", self.custom_url or "")
+    return self:_publicCall("capabilities", {})
+end
+
 function SyncClient:setRecoveryEmail(username, userkey, email)
     DiagnosticLog.log("recovery email update", self.custom_url or "", "username", username or "", "email", email or "")
     local setup_ok, setup_error = self:_setup(username, userkey)
@@ -238,6 +243,23 @@ end
 
 function SyncClient:listDocuments(username, userkey, callback)
     self:_async("list_documents", username, userkey, {}, callback)
+end
+
+
+function SyncClient:listLogicalLibrary(username, userkey, callback)
+    self:_async("logical_library", username, userkey, {}, callback)
+end
+
+function SyncClient:createLogicalBook(username, userkey, payload, callback)
+    self:_async("create_logical_book", username, userkey, payload, callback)
+end
+
+function SyncClient:getLogicalBook(username, userkey, id, callback)
+    self:_async("get_logical_book", username, userkey, { id = id }, callback)
+end
+
+function SyncClient:unlinkLogicalBook(username, userkey, id, callback)
+    self:_async("unlink_logical_book", username, userkey, { id = id }, callback)
 end
 
 return SyncClient

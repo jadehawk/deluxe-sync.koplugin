@@ -2,7 +2,7 @@
 
 Deluxe-Sync is a KOReader plugin that extends the built-in KOSync workflow to multiple independent KOReader-compatible servers.
 
-Current plugin version: **0.1.2**
+Current plugin version: **0.1.3**
 
 ## Overview
 
@@ -18,6 +18,8 @@ Key capabilities include:
 - Per-server offline/transient retry queues with queue inspection and manual retry.
 - Metadata-aware enhanced-server support with automatic fallback to the standard KOSync payload.
 - Remote library browsing when supported by the server.
+- Per-server document matching: binary partial-MD5 by default, or KOReader-compatible filename matching using the MD5 of the basename.
+- Server-side logical-book linking on capable enhanced servers, with linked versions presented as one book while raw sync identities remain intact and reversible.
 - Safe remote-position review and preview before accepting a sync.
 - Optional six-digit email account recovery when supported by the server.
 - Built-in GitHub update checks and in-plugin updates.
@@ -121,6 +123,16 @@ When metadata is enabled for a compatible server, Deluxe-Sync extends the standa
 ```
 
 The metadata extension currently contains exactly `filename`, `title`, and `authors`. If metadata is disabled or the server is detected as metadata-incompatible, Deluxe-Sync falls back to the standard payload.
+
+### Document matching
+
+Each server stores its own document matching method. Binary is the backward-compatible default and sends KOReader's partial MD5 checksum. Filename mode sends the MD5 of the document basename, matching KOReader's built-in Progress Sync filename behavior. This lets different Deluxe-Sync servers use different matching rules at the same time.
+
+### Logical-book linking on enhanced servers
+
+When an enhanced server advertises logical_books and logical_library, Browse Tracked Books uses the server logical-library view. Already-linked versions appear as one logical book, while only unlinked raw records can be selected for a new link. Linking is non-destructive and reversible: the raw KOSync identities remain stored independently.
+
+Before a link is created, Deluxe-Sync asks which selected version should supply the initial shared reading position. The furthest stored percentage is recommended by default, with the latest timestamp used only to break a tie, but the user can explicitly choose another version when a restart or deliberate backward position is correct.
 
 ### Recovery email enrollment
 

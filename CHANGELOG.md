@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.1.3] - 2026-09-08
+
+### Added
+
+- Added per-server Binary/Filename document matching, with Binary remaining the backward-compatible default and Filename matching KOReader's MD5-of-basename behavior.
+- Added enhanced-server logical-book browsing, linking, linked-book inspection, and unlinking from Browse Tracked Books.
+- Added explicit shared-progress source selection when linking, recommending the furthest stored position by default.
+
+### Fixed
+
+- Replaced the crash-prone Link Books checkbox/scroll composition with KOReader native auto-scrolling button rows.
+- Compacted Add/Edit server options into the existing action row so Metadata and Binary/Filename matching remain visible without adding height above the onscreen keyboard.
+
+### Tests
+
+- Added Lua 5.1 regression coverage for per-server matching, enhanced logical-book API wiring, linking selection, and explicit shared-progress source requests.
+
 ## [0.1.2] - 2026-09-03
 
 ### Added

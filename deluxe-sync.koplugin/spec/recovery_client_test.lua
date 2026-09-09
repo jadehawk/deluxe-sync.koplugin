@@ -42,6 +42,26 @@ local fake_client = {
         captured.confirm = params
         return { status = 200, body = '{"reset":true}' }
     end,
+    capabilities = function(_, params)
+        captured.enhanced_capabilities = params
+        return { status = 200, body = '{"capabilities":{"logical_books":true,"logical_library":true}}' }
+    end,
+    logical_library = function(_, params)
+        captured.logical_library = params
+        return { status = 200, body = '{"books":[]}' }
+    end,
+    create_logical_book = function(_, params)
+        captured.create_logical_book = params
+        return { status = 201, body = '{"logical_book":{"logical_book_id":7}}' }
+    end,
+    get_logical_book = function(_, params)
+        captured.get_logical_book = params
+        return { status = 200, body = '{"logical_book":{"logical_book_id":7}}' }
+    end,
+    unlink_logical_book = function(_, params)
+        captured.unlink_logical_book = params
+        return { status = 200, body = '{"unlinked":true}' }
+    end,
 }
 
 package.preload["Spore"] = function()
@@ -85,10 +105,50 @@ local client = SyncClient:new{ service_spec = "api.json", custom_url = "http://1
 local ok, status = client:recoveryCapability()
 assert(ok == true and status == 200)
 
+ok, status = client:capabilities()
+assert(ok == true and status == 200)
+assert(type(captured.enhanced_capabilities) == "table")
+
 local existing_key = "abcdefabcdefabcdefabcdefabcdefab"
 ok, status = client:setRecoveryEmail("reader", existing_key, "reader@example.com")
 assert(ok == true and status == 204)
 assert(captured.email.email == "reader@example.com")
+
+local logical_callback_called = false
+client:listLogicalLibrary("reader", existing_key, function(logical_ok, logical_status)
+    logical_callback_called = true
+    assert(logical_ok == true and logical_status == 200)
+end)
+assert(logical_callback_called, "logical library callback should run")
+assert(type(captured.logical_library) == "table")
+
+local create_callback_called = false
+client:createLogicalBook("reader", existing_key, {
+    documents = { "doc-a", "doc-b" },
+    progress_source_document = "doc-a",
+}, function(create_ok, create_status)
+    create_callback_called = true
+    assert(create_ok == true and create_status == 201)
+end)
+assert(create_callback_called, "logical book create callback should run")
+assert(captured.create_logical_book.documents[1] == "doc-a")
+assert(captured.create_logical_book.progress_source_document == "doc-a")
+
+local detail_callback_called = false
+client:getLogicalBook("reader", existing_key, 7, function(detail_ok, detail_status)
+    detail_callback_called = true
+    assert(detail_ok == true and detail_status == 200)
+end)
+assert(detail_callback_called, "logical book detail callback should run")
+assert(captured.get_logical_book.id == 7)
+
+local unlink_callback_called = false
+client:unlinkLogicalBook("reader", existing_key, 7, function(unlink_ok, unlink_status)
+    unlink_callback_called = true
+    assert(unlink_ok == true and unlink_status == 200)
+end)
+assert(unlink_callback_called, "logical book unlink callback should run")
+assert(captured.unlink_logical_book.id == 7)
 
 ok, status = client:requestRecovery("reader", "reader@example.com")
 assert(ok == true and status == 202)
