@@ -72,6 +72,21 @@
       "payload": ["legacy_device_id", "koreader_device_id", "display_name", "model", "platform", "koreader_version", "deluxe_sync_version", "capabilities"],
       "expected_status": [200, 400, 401, 404, 405, 422]
     },
+    "get_annotations": {
+      "path": "/api/v1/annotations",
+      "method": "GET",
+      "required_params": ["document"],
+      "optional_params": ["after", "limit"],
+      "expected_status": [200, 400, 401, 404, 405]
+    },
+    "put_annotations": {
+      "path": "/api/v1/annotations",
+      "method": "PUT",
+      "required_params": ["document", "legacy_device_id", "annotations"],
+      "optional_params": ["device"],
+      "payload": ["document", "legacy_device_id", "device", "annotations"],
+      "expected_status": [200, 400, 401, 404, 405, 422]
+    },
     "logical_library": {
       "path": "/api/v1/library",
       "method": "GET",

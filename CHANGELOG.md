@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.1.6] - 2026-09-09
+
+### Added
+
+- Added capability-gated Stage 7 annotation synchronization for KOReader highlights, notes, and bookmarks on enhanced servers advertising annotation protocol v1.
+- Added stable per-annotation Deluxe sync IDs plus persistent per-server/document delta cursors and server revisions.
+- Added revisioned deletion tombstones and server-wins stale-write conflict handling so offline devices cannot silently resurrect deleted annotations.
+- Added Annotations status to server capability/details cards.
+
+### Changed
+
+- Successful push and pull workflows now start annotation convergence independently of the normal progress queue; standard KOSync servers receive no annotation requests.
+- Annotation positions remain owned by the exact physical document. Linked-book aggregation never translates highlight/bookmark locations across different files.
+
+### Tests
+
+- Added dynamic annotation adapter coverage and Stage 7 integration assertions, with the complete 12-spec suite and modified runtime syntax checked under Lua 5.1.5.
+
 ## [0.1.5] - 2026-09-09
 
 ### Added

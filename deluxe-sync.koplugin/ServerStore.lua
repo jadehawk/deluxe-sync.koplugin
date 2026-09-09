@@ -14,6 +14,7 @@ local defaults = {
     servers = {},
     aliases = {},
     known_documents = {},
+    annotation_sync = {},
     settings = {
         auto_sync = false,
         sync_forward = "prompt",
@@ -41,6 +42,7 @@ function ServerStore:new()
     o.data.servers = o.data.servers or {}
     o.data.aliases = o.data.aliases or {}
     o.data.known_documents = o.data.known_documents or {}
+    o.data.annotation_sync = o.data.annotation_sync or {}
     o.data.settings = o.data.settings or deepCopy(defaults.settings)
     if o.data.settings.auto_sync == nil then o.data.settings.auto_sync = false end
     if o.data.settings.sync_forward == nil then o.data.settings.sync_forward = "prompt" end
@@ -129,6 +131,8 @@ function ServerStore:upsertServer(server)
         device_registration = nil,
         device_registration_version = nil,
         device_registered = nil,
+        annotations = nil,
+        annotations_version = nil,
     }
     for i, existing in ipairs(self.data.servers) do
         if existing.id == server.id then
@@ -148,6 +152,7 @@ function ServerStore:removeServer(id)
         if self.data.servers[i].id == id then table.remove(self.data.servers, i) end
     end
     self.data.known_documents[id] = nil
+    self.data.annotation_sync[id] = nil
     for canonical_document, aliases in pairs(self.data.aliases or {}) do
         local filtered = {}
         for _, alias in ipairs(aliases) do
@@ -221,6 +226,29 @@ function ServerStore:findCanonicalDocument(server_id, remote_document)
             end
         end
     end
+end
+
+function ServerStore:getAnnotationState(server_id, document)
+    if not server_id or not document then return { cursor = 0, items = {} } end
+    self.data.annotation_sync = self.data.annotation_sync or {}
+    self.data.annotation_sync[server_id] = self.data.annotation_sync[server_id] or {}
+    local state = self.data.annotation_sync[server_id][document]
+    if type(state) ~= "table" then
+        state = { cursor = 0, items = {} }
+        self.data.annotation_sync[server_id][document] = state
+    end
+    state.cursor = tonumber(state.cursor) or 0
+    state.items = type(state.items) == "table" and state.items or {}
+    return state
+end
+
+function ServerStore:saveAnnotationState(server_id, document, state)
+    if not server_id or not document or type(state) ~= "table" then return false end
+    self.data.annotation_sync = self.data.annotation_sync or {}
+    self.data.annotation_sync[server_id] = self.data.annotation_sync[server_id] or {}
+    self.data.annotation_sync[server_id][document] = state
+    self:flush()
+    return true
 end
 
 return ServerStore

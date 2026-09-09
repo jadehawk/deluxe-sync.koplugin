@@ -67,6 +67,7 @@ local UrlUtil
 local ResponseUtil
 local Resolver
 local LocalLibrary
+local AnnotationAdapter
 
 local ProgressSyncDeluxe = WidgetContainer:extend{
     name = "progresssyncdeluxe",
@@ -198,6 +199,7 @@ function ProgressSyncDeluxe:init()
     self.preview = nil
     self.init_error = nil
     self.device_heartbeat_sent = {}
+    self.annotation_sync_in_flight = {}
     ensureReaderMenuOrder()
 
     -- Register first so an initialization failure cannot make the plugin vanish
@@ -216,6 +218,7 @@ function ProgressSyncDeluxe:init()
         ResponseUtil = require("ResponseUtil")
         Resolver = require("Resolver")
         LocalLibrary = require("LocalLibrary")
+        AnnotationAdapter = require("AnnotationAdapter")
         self.store = ServerStore:new()
         DiagnosticLog.configure(self.store.data.settings.logging_enabled ~= false)
         self.queue = SyncQueue:new()
@@ -597,6 +600,151 @@ function ProgressSyncDeluxe:serverSupportsDeviceRegistration(server)
         and (tonumber(capabilities.device_registration_version) or 0) >= 1
 end
 
+function ProgressSyncDeluxe:serverSupportsAnnotations(server)
+    local capabilities = server and server.capabilities or {}
+    return capabilities.annotations == true
+        and (tonumber(capabilities.annotations_version) or 0) >= 1
+end
+
+function ProgressSyncDeluxe:getLocalAnnotations()
+    local annotation_module = self.ui and self.ui.annotation
+    if annotation_module and type(annotation_module.annotations) == "table" then
+        return annotation_module.annotations
+    end
+    local annotations
+    if self.ui and self.ui.doc_settings and self.ui.doc_settings.readSetting then
+        annotations = self.ui.doc_settings:readSetting("annotations")
+    end
+    if type(annotations) ~= "table" then annotations = {} end
+    if annotation_module then annotation_module.annotations = annotations end
+    return annotations
+end
+
+function ProgressSyncDeluxe:persistLocalAnnotations(annotations)
+    if type(annotations) ~= "table" then return end
+    if self.ui and self.ui.annotation then self.ui.annotation.annotations = annotations end
+    if self.ui and self.ui.doc_settings and self.ui.doc_settings.saveSetting then
+        self.ui.doc_settings:saveSetting("annotations", annotations)
+        if self.ui.doc_settings.flush then pcall(self.ui.doc_settings.flush, self.ui.doc_settings) end
+    end
+    if self.ui and self.ui.handleEvent then
+        pcall(self.ui.handleEvent, self.ui, Event:new("AnnotationsModified"))
+    end
+end
+
+function ProgressSyncDeluxe:syncAnnotationsForServer(server, document, callback)
+    callback = callback or function() end
+    if not self:serverSupportsAnnotations(server) or not document or document == "" then
+        callback(false, nil, "Annotation sync is not supported")
+        return
+    end
+
+    local sync_key = tostring(server.id or server.url or "server") .. "\0" .. tostring(document)
+    if self.annotation_sync_in_flight[sync_key] then
+        callback(false, nil, "Annotation sync is already in progress")
+        return
+    end
+    self.annotation_sync_in_flight[sync_key] = true
+
+    local annotations = self:getLocalAnnotations()
+    local state = self.store:getAnnotationState(server.id, document)
+    local pending, ids_changed = AnnotationAdapter.collectLocalChanges(
+        annotations,
+        state,
+        self.store.data.device_id
+    )
+    local pending_by_id = {}
+    for _, item in ipairs(pending) do pending_by_id[tostring(item.id)] = true end
+    local local_changed = ids_changed
+    if ids_changed then self:persistLocalAnnotations(annotations) end
+
+    local client = self:newClient(server)
+    local function saveState()
+        self.store:saveAnnotationState(server.id, document, state)
+    end
+    local function finish(ok, status, body)
+        self.annotation_sync_in_flight[sync_key] = nil
+        saveState()
+        if local_changed then self:persistLocalAnnotations(annotations) end
+        if DiagnosticLog then
+            DiagnosticLog.log(
+                "annotation sync",
+                serverLabel(server),
+                "document", document,
+                "status", status or "nil",
+                "ok", ok and true or false,
+                "local_changes", #pending,
+                "cursor", state.cursor or 0
+            )
+        end
+        callback(ok, status, body)
+    end
+    local function applyServerAnnotation(remote)
+        if type(remote) ~= "table" or not remote.id then return end
+        if AnnotationAdapter.applyRemote(annotations, remote) then local_changed = true end
+        AnnotationAdapter.remember(state, remote, annotations)
+    end
+
+    local sendPending
+    sendPending = function(offset)
+        offset = offset or 1
+        if offset > #pending then
+            finish(true, 200, nil)
+            return
+        end
+        local batch = {}
+        for index = offset, math.min(#pending, offset + 199) do
+            table.insert(batch, pending[index])
+        end
+        client:putAnnotations(server.username, server.userkey, {
+            document = document,
+            legacy_device_id = tostring(self.store.data.device_id),
+            device = tostring(Device.model or "KOReader device"),
+            annotations = batch,
+        }, function(ok, status, body)
+            local data = decode(body) or {}
+            if not ok or status ~= 200 or type(data.results) ~= "table" then
+                finish(false, status, body)
+                return
+            end
+            for _, result in ipairs(data.results) do
+                if type(result) == "table" and type(result.annotation) == "table" then
+                    applyServerAnnotation(result.annotation)
+                end
+            end
+            saveState()
+            sendPending(offset + #batch)
+        end)
+    end
+
+    local pullDeltas
+    pullDeltas = function(after)
+        client:getAnnotations(server.username, server.userkey, document, after, 200, function(ok, status, body)
+            local data = decode(body) or {}
+            if not ok or status ~= 200 or type(data.changes) ~= "table" then
+                finish(false, status, body)
+                return
+            end
+            for _, change in ipairs(data.changes) do
+                local remote = type(change) == "table" and change.annotation or nil
+                if type(remote) == "table" and remote.id and not pending_by_id[tostring(remote.id)] then
+                    applyServerAnnotation(remote)
+                end
+            end
+            local next_cursor = tonumber(data.cursor)
+            if next_cursor and next_cursor >= (tonumber(state.cursor) or 0) then state.cursor = next_cursor end
+            saveState()
+            if data.has_more == true then
+                pullDeltas(state.cursor)
+            else
+                sendPending(1)
+            end
+        end)
+    end
+
+    pullDeltas(tonumber(state.cursor) or 0)
+end
+
 function ProgressSyncDeluxe:getDeviceRegistrationPayload()
     local koreader_device_id
     if G_reader_settings and G_reader_settings.readSetting then
@@ -627,6 +775,7 @@ function ProgressSyncDeluxe:getDeviceRegistrationPayload()
             rich_progress = true,
             logical_books = true,
             device_registration = true,
+            annotations = true,
         },
     }
 end
@@ -754,6 +903,7 @@ function ProgressSyncDeluxe:pushAll(interactive)
                         self.store:setCapability(server.id, "metadata_compatible", true)
                     end
                     self:heartbeatDevice(server, nil, false)
+                    self:syncAnnotationsForServer(server, document)
                     done()
                 elseif is_metadata_probe and (status == 400 or status == 404 or status == 422) then
                     if DiagnosticLog then DiagnosticLog.log("metadata fallback", serverLabel(server), "status", status, "body", body) end
@@ -958,6 +1108,13 @@ function ProgressSyncDeluxe:pullAll(interactive)
         addRequest(self:getServerDocumentDigest(server) or canonical_document, false)
         for unused_index, alias in ipairs(self.store:getAliases(canonical_document)) do
             if alias.server_id == server.id then addRequest(alias.remote_document, true) end
+        end
+    end
+
+    for _, server in ipairs(servers) do
+        if self:serverSupportsAnnotations(server) then
+            local annotation_document = self:getServerDocumentDigest(server) or canonical_document
+            self:syncAnnotationsForServer(server, annotation_document)
         end
     end
 
@@ -2562,7 +2719,7 @@ function ProgressSyncDeluxe:showStatusCard(title, rows, actions)
     return dialog
 end
 
-function ProgressSyncDeluxe:showServerTestResult(server, listing_supported, book_count, recovery_supported, logical_supported, rich_supported, device_supported, device_registered)
+function ProgressSyncDeluxe:showServerTestResult(server, listing_supported, book_count, recovery_supported, logical_supported, rich_supported, device_supported, device_registered, annotation_supported)
     local listing_value = listing_supported
         and T(_("Supported (%1 Books)"), book_count or 0)
         or _("Not Supported")
@@ -2576,6 +2733,7 @@ function ProgressSyncDeluxe:showServerTestResult(server, listing_supported, book
         { label = _("Linked Books"), value = logical_supported and _("Supported") or _("Not Supported") },
         { label = _("Rich Position"), value = rich_supported and _("Supported") or _("Not Supported") },
         { label = _("Device Identity"), value = device_value },
+        { label = _("Annotations"), value = annotation_supported and _("Supported") or _("Not Supported") },
     })
 end
 
@@ -2605,12 +2763,18 @@ function ProgressSyncDeluxe:testServer(server)
     local device_supported = type(enhanced_capabilities) == "table"
         and enhanced_capabilities.device_registration == true
         and (device_registration_version or 0) >= 1
+    local annotation_version = type(enhanced_capabilities) == "table" and tonumber(enhanced_capabilities.annotations_version) or nil
+    local annotation_supported = type(enhanced_capabilities) == "table"
+        and enhanced_capabilities.annotations == true
+        and (annotation_version or 0) >= 1
     self.store:setCapability(server.id, "logical_books", logical_supported)
     self.store:setCapability(server.id, "logical_library", logical_supported)
     self.store:setCapability(server.id, "rich_progress", rich_supported)
     self.store:setCapability(server.id, "rich_position_version", rich_position_version)
     self.store:setCapability(server.id, "device_registration", device_supported)
     self.store:setCapability(server.id, "device_registration_version", device_registration_version)
+    self.store:setCapability(server.id, "annotations", annotation_supported)
+    self.store:setCapability(server.id, "annotations_version", annotation_version)
     if recovery_supported and server.email and server.email ~= "" then
         local email_ok, email_status, email_body = client:setRecoveryEmail(server.username, server.userkey, server.email)
         DiagnosticLog.log("recovery email enrollment result", server.url or "", "username", server.username or "", "email", server.email, "status", email_status or "nil", "ok", email_ok, "body", email_body or "")
@@ -2622,10 +2786,10 @@ function ProgressSyncDeluxe:testServer(server)
             if list_ok and list_status == 200 and data and type(data.documents) == "table" then
                 self.store:setCapability(server.id, "document_listing", true)
                 self.store:setKnownDocuments(server.id, data.documents)
-                self:showServerTestResult(server, true, #data.documents, recovery_supported, logical_supported, rich_supported, device_supported, device_registered)
+                self:showServerTestResult(server, true, #data.documents, recovery_supported, logical_supported, rich_supported, device_supported, device_registered, annotation_supported)
             else
                 self.store:setCapability(server.id, "document_listing", false)
-                self:showServerTestResult(server, false, 0, recovery_supported, logical_supported, rich_supported, device_supported, device_registered)
+                self:showServerTestResult(server, false, 0, recovery_supported, logical_supported, rich_supported, device_supported, device_registered, annotation_supported)
             end
         end)
     end
@@ -2644,6 +2808,7 @@ function ProgressSyncDeluxe:showServer(server)
     local recovery = caps.account_recovery == true and _("Supported") or (caps.account_recovery == false and _("Not supported") or _("Unknown"))
     local logical = caps.logical_library == true and _("Supported") or (caps.logical_library == false and _("Not supported") or _("Unknown"))
     local rich = caps.rich_progress == true and _("Supported") or (caps.rich_progress == false and _("Not supported") or _("Unknown"))
+    local annotations = caps.annotations == true and _("Supported") or (caps.annotations == false and _("Not supported") or _("Unknown"))
     local device_identity = caps.device_registration == true
         and (caps.device_registered == true and _("Registered") or _("Supported"))
         or (caps.device_registration == false and _("Not supported") or _("Unknown"))
@@ -2715,6 +2880,7 @@ function ProgressSyncDeluxe:showServer(server)
     addStatusRow(_("Linked Books"), logical)
     addStatusRow(_("Rich Position"), rich)
     addStatusRow(_("Device Identity"), device_identity)
+    addStatusRow(_("Annotations"), annotations)
     addStatusRow(_("Matching Method"), matching)
     addStatusRow(_("Account Recovery"), recovery)
 

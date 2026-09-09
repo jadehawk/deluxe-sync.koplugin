@@ -241,6 +241,18 @@ function SyncClient:registerDevice(username, userkey, payload, callback)
     self:_async("register_device", username, userkey, payload, callback)
 end
 
+function SyncClient:getAnnotations(username, userkey, document, after, limit, callback)
+    self:_async("get_annotations", username, userkey, {
+        document = document,
+        after = tonumber(after) or 0,
+        limit = tonumber(limit) or 200,
+    }, callback)
+end
+
+function SyncClient:putAnnotations(username, userkey, payload, callback)
+    self:_async("put_annotations", username, userkey, payload, callback)
+end
+
 function SyncClient:getProgress(username, userkey, document, callback)
     self:_async("get_progress", username, userkey, { document = document }, callback)
 end
