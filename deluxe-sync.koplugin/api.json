@@ -58,6 +58,36 @@
       "path": "/syncs/documents",
       "method": "GET",
       "expected_status": [200, 401, 404]
+    },
+    "capabilities": {
+      "path": "/api/v1/capabilities",
+      "method": "GET",
+      "expected_status": [200, 404, 405]
+    },
+    "logical_library": {
+      "path": "/api/v1/library",
+      "method": "GET",
+      "expected_status": [200, 401, 404, 405]
+    },
+    "create_logical_book": {
+      "path": "/api/v1/logical-books",
+      "method": "POST",
+      "required_params": ["documents"],
+      "optional_params": ["display_title", "display_authors", "cover_document", "progress_source_document"],
+      "payload": ["documents", "display_title", "display_authors", "cover_document", "progress_source_document"],
+      "expected_status": [201, 400, 401, 404, 409, 422]
+    },
+    "get_logical_book": {
+      "path": "/api/v1/logical-books/:id",
+      "method": "GET",
+      "required_params": ["id"],
+      "expected_status": [200, 400, 401, 404]
+    },
+    "unlink_logical_book": {
+      "path": "/api/v1/logical-books/:id",
+      "method": "DELETE",
+      "required_params": ["id"],
+      "expected_status": [200, 400, 401, 404]
     }
   }
 }

@@ -48,6 +48,11 @@ function ServerStore:new()
 
     local servers_changed = false
     for _, server in ipairs(o.data.servers) do
+        local checksum_method = server.checksum_method == "filename" and "filename" or "binary"
+        if server.checksum_method ~= checksum_method then
+            server.checksum_method = checksum_method
+            servers_changed = true
+        end
         local normalized_url, url_error = UrlUtil.normalize(server.url)
         if normalized_url then
             if server.url ~= normalized_url then
@@ -111,11 +116,14 @@ function ServerStore:upsertServer(server)
     DiagnosticLog.log("server upsert", server.name or "", server.url or "", server.username or "", "email", server.email or "", "enabled", server.enabled ~= false)
     server.enabled = server.enabled ~= false
     server.metadata_enabled = server.metadata_enabled ~= false
+    server.checksum_method = server.checksum_method == "filename" and "filename" or "binary"
     server.capabilities = server.capabilities or {
         metadata_compatible = nil,
         metadata_retained = nil,
         document_listing = nil,
         account_recovery = nil,
+        logical_books = nil,
+        logical_library = nil,
     }
     for i, existing in ipairs(self.data.servers) do
         if existing.id == server.id then
