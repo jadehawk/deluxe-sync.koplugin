@@ -257,6 +257,23 @@ function SyncClient:putReadingStatistics(username, userkey, payload, callback)
     self:_async("put_reading_statistics", username, userkey, payload, callback)
 end
 
+function SyncClient:putSettingsBackup(username, userkey, payload, callback)
+    self:_async("put_settings_backup", username, userkey, payload, callback)
+end
+
+function SyncClient:getCurrentSettingsRestore(username, userkey, legacy_device_id, koreader_device_id, callback)
+    self:_async("get_current_settings_restore", username, userkey, {
+        legacy_device_id = legacy_device_id,
+        koreader_device_id = koreader_device_id,
+    }, callback)
+end
+
+function SyncClient:completeSettingsRestore(username, userkey, request_id, payload, callback)
+    payload = payload or {}
+    payload.request_id = request_id
+    self:_async("complete_settings_restore", username, userkey, payload, callback)
+end
+
 function SyncClient:getProgress(username, userkey, document, callback)
     self:_async("get_progress", username, userkey, { document = document }, callback)
 end

@@ -69,6 +69,7 @@ local Resolver
 local LocalLibrary
 local AnnotationAdapter
 local ReadingStatisticsAdapter
+local SettingsBackupAdapter
 
 local ProgressSyncDeluxe = WidgetContainer:extend{
     name = "progresssyncdeluxe",
@@ -202,6 +203,9 @@ function ProgressSyncDeluxe:init()
     self.device_heartbeat_sent = {}
     self.annotation_sync_in_flight = {}
     self.statistics_sync_in_flight = {}
+    self.settings_backup_in_flight = {}
+    self.settings_restore_in_flight = {}
+    self.settings_restore_seen = {}
     ensureReaderMenuOrder()
 
     -- Register first so an initialization failure cannot make the plugin vanish
@@ -222,6 +226,7 @@ function ProgressSyncDeluxe:init()
         LocalLibrary = require("LocalLibrary")
         AnnotationAdapter = require("AnnotationAdapter")
         ReadingStatisticsAdapter = require("ReadingStatisticsAdapter")
+        SettingsBackupAdapter = require("SettingsBackupAdapter")
         self.store = ServerStore:new()
         DiagnosticLog.configure(self.store.data.settings.logging_enabled ~= false)
         self.queue = SyncQueue:new()
@@ -647,6 +652,53 @@ function ProgressSyncDeluxe:refreshReadingStatisticsCapabilities(server, client)
     return self:cacheReadingStatisticsCapabilities(server, data.capabilities)
 end
 
+function ProgressSyncDeluxe:serverSupportsSettingsBackups(server)
+    local capabilities = server and server.capabilities or {}
+    return capabilities.settings_backups == true
+        and (tonumber(capabilities.settings_backups_version) or 0) >= 1
+        and (tonumber(capabilities.settings_snapshot_schema_version) or 0) >= SettingsBackupAdapter.SCHEMA_VERSION
+end
+
+function ProgressSyncDeluxe:serverSupportsSettingsRestore(server)
+    local capabilities = server and server.capabilities or {}
+    local direction = capabilities.settings_restore_direction
+    return self:serverSupportsSettingsBackups(server)
+        and capabilities.settings_restore == true
+        and (direction == nil or direction == "server_request_client_confirm")
+end
+
+function ProgressSyncDeluxe:cacheSettingsBackupCapabilities(server, enhanced_capabilities)
+    local backup_version = type(enhanced_capabilities) == "table" and tonumber(enhanced_capabilities.settings_backups_version) or nil
+    local schema_version = type(enhanced_capabilities) == "table" and tonumber(enhanced_capabilities.settings_snapshot_schema_version) or nil
+    local restore_direction = type(enhanced_capabilities) == "table" and enhanced_capabilities.settings_restore_direction or nil
+    local backup_supported = type(enhanced_capabilities) == "table"
+        and enhanced_capabilities.settings_backups == true
+        and (backup_version or 0) >= 1
+        and (schema_version or 0) >= SettingsBackupAdapter.SCHEMA_VERSION
+    local restore_supported = backup_supported
+        and enhanced_capabilities.settings_restore == true
+        and (restore_direction == nil or restore_direction == "server_request_client_confirm")
+    self.store:setCapability(server.id, "settings_backups", backup_supported)
+    self.store:setCapability(server.id, "settings_backups_version", backup_version)
+    self.store:setCapability(server.id, "settings_snapshot_schema_version", schema_version)
+    self.store:setCapability(server.id, "settings_restore", restore_supported)
+    self.store:setCapability(server.id, "settings_restore_direction", restore_direction)
+    return backup_supported, restore_supported
+end
+
+function ProgressSyncDeluxe:refreshSettingsBackupCapabilities(server, client)
+    client = client or self:newClient(server)
+    local ok, status, body = client:capabilities()
+    local data = decode(body)
+    if ok and (status == 404 or status == 405) then
+        return self:cacheSettingsBackupCapabilities(server, nil)
+    end
+    if not ok or status ~= 200 or type(data) ~= "table" or type(data.capabilities) ~= "table" then
+        return false, false
+    end
+    return self:cacheSettingsBackupCapabilities(server, data.capabilities)
+end
+
 function ProgressSyncDeluxe:syncReadingStatisticsForServer(server, callback)
     callback = callback or function() end
     if not self.store or not ReadingStatisticsAdapter or not server or server.enabled == false then
@@ -746,6 +798,206 @@ function ProgressSyncDeluxe:syncReadingStatisticsForAll()
     for index, server in ipairs(self.store:getEnabledServers()) do
         UIManager:scheduleIn((index - 1) * 0.2, function()
             self:syncReadingStatisticsForServer(server)
+        end)
+    end
+end
+
+function ProgressSyncDeluxe:completeSettingsRestoreRequest(server, client, registration, request_id, status, message, callback)
+    callback = callback or function() end
+    client:completeSettingsRestore(server.username, server.userkey, request_id, {
+        legacy_device_id = tostring(self.store.data.device_id),
+        koreader_device_id = registration.koreader_device_id,
+        status = status,
+        message = message,
+    }, function(ok, response_status, body)
+        local success = ok and response_status == 200
+        callback(success, response_status, success and nil or (serverResponseMessage(body) or body or "Restore acknowledgement failed"))
+    end)
+end
+
+function ProgressSyncDeluxe:showSettingsRestorePrompt(server, restore, client, registration)
+    local request_id = tonumber(type(restore) == "table" and restore.request_id or nil)
+    local snapshot = type(restore) == "table" and restore.snapshot or nil
+    if not request_id or type(snapshot) ~= "table" or type(snapshot.settings) ~= "table" then return false end
+
+    local prompt_key = tostring(server.id or server.url or "server") .. ":" .. tostring(request_id)
+    if self.settings_restore_seen[prompt_key] then return false end
+    self.settings_restore_seen[prompt_key] = true
+
+    local created_at = tonumber(snapshot.created_at) or 0
+    local created_label = created_at > 0 and os.date("%Y-%m-%d %H:%M", created_at) or _("Unknown date")
+    local koreader_version = snapshot.koreader_version and tostring(snapshot.koreader_version) or _("Unknown")
+    local setting_count = math.max(0, math.floor(tonumber(snapshot.setting_count) or 0))
+    local dialog
+
+    local function showResult(text)
+        UIManager:show(InfoMessage:new{ text = text, timeout = 5 })
+    end
+
+    local function acknowledge(status, message, result_message)
+        self:completeSettingsRestoreRequest(server, client, registration, request_id, status, message, function(ok, response_status, error_message)
+            if ok then
+                showResult(result_message)
+            else
+                showResult(T(_("Settings changed locally, but the server acknowledgement failed (%1). %2"), tostring(response_status or "network"), tostring(error_message or "Please try again later.")))
+            end
+        end)
+    end
+
+    dialog = ButtonDialog:new{
+        title = _("Restore KOReader settings backup?"),
+        title_align = "left",
+        buttons = {
+            {{
+                text = T(_("%1\nBackup: %2\nKOReader: %3\nSafe settings: %4"), serverLabel(server), created_label, koreader_version, tostring(setting_count)),
+                enabled = false,
+            }},
+            {
+                { text = _("Later"), callback = function() UIManager:close(dialog) end },
+                { text = _("Restore"), callback = function()
+                    UIManager:close(dialog)
+                    local applied, result = SettingsBackupAdapter.apply(snapshot.settings)
+                    if not applied then
+                        acknowledge("failed", tostring(result or "Unable to apply settings"), _("The settings backup could not be applied."))
+                        return
+                    end
+                    self.store:saveSettingsBackupState(server.id, {
+                        checksum = snapshot.checksum or result.checksum,
+                        koreader_version = snapshot.koreader_version or registration.koreader_version,
+                        snapshot_id = snapshot.snapshot_id,
+                        uploaded_at = os.time(),
+                    })
+                    acknowledge("applied", "Confirmed and applied on reader", _("Settings restored. Restart KOReader to ensure every restored setting takes effect."))
+                end },
+            },
+            {{ text = _("Reject Restore Request"), callback = function()
+                UIManager:close(dialog)
+                acknowledge("rejected", "Rejected on reader", _("Settings restore request rejected. No settings were changed."))
+            end }},
+        },
+    }
+    suppressDialogContainerHolds(dialog)
+    UIManager:show(dialog)
+    return true
+end
+
+function ProgressSyncDeluxe:checkSettingsRestoreForServer(server, client, callback)
+    callback = callback or function() end
+    if not self.store or not SettingsBackupAdapter or not server or server.enabled == false then
+        callback(false, nil, "Settings restore check is unavailable")
+        return
+    end
+    client = client or self:newClient(server)
+    local capabilities = server.capabilities or {}
+    if capabilities.settings_restore == nil or capabilities.settings_backups == nil then
+        self:refreshSettingsBackupCapabilities(server, client)
+    end
+    if not self:serverSupportsSettingsRestore(server) then
+        callback(true, 200, "Settings restore is not supported")
+        return
+    end
+
+    local sync_key = tostring(server.id or server.url or "server")
+    if self.settings_restore_in_flight[sync_key] then
+        callback(true, 200, "Settings restore check already in progress")
+        return
+    end
+    self.settings_restore_in_flight[sync_key] = true
+    local registration = self:getDeviceRegistrationPayload()
+    client:getCurrentSettingsRestore(server.username, server.userkey, tostring(self.store.data.device_id), registration.koreader_device_id, function(ok, status, body)
+        self.settings_restore_in_flight[sync_key] = nil
+        local data = decode(body)
+        if not ok or status ~= 200 or type(data) ~= "table" then
+            callback(false, status, serverResponseMessage(body) or body or "Settings restore check failed")
+            return
+        end
+        if type(data.restore) ~= "table" then
+            callback(true, status, "No pending settings restore")
+            return
+        end
+        self:showSettingsRestorePrompt(server, data.restore, client, registration)
+        callback(true, status, "Settings restore confirmation shown")
+    end)
+end
+
+function ProgressSyncDeluxe:syncSettingsBackupForServer(server, callback)
+    callback = callback or function() end
+    if not self.store or not SettingsBackupAdapter or not server or server.enabled == false then
+        callback(false, nil, "Settings backup sync is unavailable")
+        return
+    end
+
+    local sync_key = tostring(server.id or server.url or "server")
+    if self.settings_backup_in_flight[sync_key] then
+        callback(true, 200, "Settings backup sync already in progress")
+        return
+    end
+    local client = self:newClient(server)
+    local capabilities = server.capabilities or {}
+    if capabilities.settings_backups == nil then
+        self:refreshSettingsBackupCapabilities(server, client)
+    end
+    if not self:serverSupportsSettingsBackups(server) then
+        callback(true, 200, "Settings backups are not supported")
+        return
+    end
+
+    local captured, capture_error = SettingsBackupAdapter.capture()
+    if not captured then
+        callback(false, nil, capture_error or "Unable to capture KOReader settings")
+        return
+    end
+    local registration = self:getDeviceRegistrationPayload()
+    local stored_state = self.store:getSettingsBackupState(server.id)
+    local unchanged = stored_state.checksum == captured.checksum
+        and tostring(stored_state.koreader_version or "") == tostring(registration.koreader_version or "")
+
+    local function finish(ok, status, message)
+        self.settings_backup_in_flight[sync_key] = nil
+        if DiagnosticLog then
+            DiagnosticLog.log("settings backup sync", serverLabel(server), "ok", ok and true or false, "status", status or "nil", "message", message or "")
+        end
+        if ok then
+            self:checkSettingsRestoreForServer(server, client)
+        end
+        callback(ok, status, message)
+    end
+
+    self.settings_backup_in_flight[sync_key] = true
+    if unchanged then
+        finish(true, 200, "Settings backup is up to date")
+        return
+    end
+
+    client:putSettingsBackup(server.username, server.userkey, {
+        legacy_device_id = tostring(self.store.data.device_id),
+        koreader_device_id = registration.koreader_device_id,
+        device = tostring(Device.model or "KOReader device"),
+        koreader_version = registration.koreader_version,
+        schema_version = SettingsBackupAdapter.SCHEMA_VERSION,
+        client_redacted_count = captured.redacted_count,
+        settings = captured.settings,
+    }, function(ok, status, body)
+        local data = decode(body)
+        if not ok or status ~= 200 or type(data) ~= "table" or type(data.snapshot) ~= "table" then
+            finish(false, status, serverResponseMessage(body) or body or "Settings backup upload failed")
+            return
+        end
+        self.store:saveSettingsBackupState(server.id, {
+            checksum = captured.checksum,
+            koreader_version = registration.koreader_version,
+            snapshot_id = data.snapshot.snapshot_id,
+            uploaded_at = os.time(),
+        })
+        finish(true, status, data.created == false and "Settings backup already stored" or "Settings backup uploaded")
+    end)
+end
+
+function ProgressSyncDeluxe:syncSettingsBackupsForAll()
+    if not self.store or not NetworkMgr:isOnline() then return end
+    for index, server in ipairs(self.store:getEnabledServers()) do
+        UIManager:scheduleIn((index - 1) * 0.25, function()
+            self:syncSettingsBackupForServer(server)
         end)
     end
 end
@@ -921,6 +1173,7 @@ function ProgressSyncDeluxe:getDeviceRegistrationPayload()
             device_registration = true,
             annotations = true,
             reading_statistics = true,
+            settings_backups = true,
         },
     }
 end
@@ -2865,7 +3118,7 @@ function ProgressSyncDeluxe:showStatusCard(title, rows, actions)
     return dialog
 end
 
-function ProgressSyncDeluxe:showServerTestResult(server, listing_supported, book_count, recovery_supported, logical_supported, rich_supported, device_supported, device_registered, annotation_supported, reading_statistics_supported)
+function ProgressSyncDeluxe:showServerTestResult(server, listing_supported, book_count, recovery_supported, logical_supported, rich_supported, device_supported, device_registered, annotation_supported, reading_statistics_supported, settings_backup_supported)
     local listing_value = listing_supported
         and T(_("Supported (%1 Books)"), book_count or 0)
         or _("Not Supported")
@@ -2881,6 +3134,7 @@ function ProgressSyncDeluxe:showServerTestResult(server, listing_supported, book
         { label = _("Device Identity"), value = device_value },
         { label = _("Annotations"), value = annotation_supported and _("Supported") or _("Not Supported") },
         { label = _("Reading Statistics"), value = reading_statistics_supported and _("Supported") or _("Not Supported") },
+        { label = _("Settings Backups"), value = settings_backup_supported and _("Supported") or _("Not Supported") },
     })
 end
 
@@ -2915,6 +3169,7 @@ function ProgressSyncDeluxe:testServer(server)
         and enhanced_capabilities.annotations == true
         and (annotation_version or 0) >= 1
     local reading_statistics_supported = self:cacheReadingStatisticsCapabilities(server, enhanced_capabilities)
+    local settings_backup_supported = self:cacheSettingsBackupCapabilities(server, enhanced_capabilities)
     self.store:setCapability(server.id, "logical_books", logical_supported)
     self.store:setCapability(server.id, "logical_library", logical_supported)
     self.store:setCapability(server.id, "rich_progress", rich_supported)
@@ -2934,12 +3189,13 @@ function ProgressSyncDeluxe:testServer(server)
             if list_ok and list_status == 200 and data and type(data.documents) == "table" then
                 self.store:setCapability(server.id, "document_listing", true)
                 self.store:setKnownDocuments(server.id, data.documents)
-                self:showServerTestResult(server, true, #data.documents, recovery_supported, logical_supported, rich_supported, device_supported, device_registered, annotation_supported, reading_statistics_supported)
+                self:showServerTestResult(server, true, #data.documents, recovery_supported, logical_supported, rich_supported, device_supported, device_registered, annotation_supported, reading_statistics_supported, settings_backup_supported)
             else
                 self.store:setCapability(server.id, "document_listing", false)
-                self:showServerTestResult(server, false, 0, recovery_supported, logical_supported, rich_supported, device_supported, device_registered, annotation_supported, reading_statistics_supported)
+                self:showServerTestResult(server, false, 0, recovery_supported, logical_supported, rich_supported, device_supported, device_registered, annotation_supported, reading_statistics_supported, settings_backup_supported)
             end
             if reading_statistics_supported then self:syncReadingStatisticsForServer(server) end
+            if settings_backup_supported then self:syncSettingsBackupForServer(server) end
         end)
     end
 
@@ -2959,6 +3215,7 @@ function ProgressSyncDeluxe:showServer(server)
     local rich = caps.rich_progress == true and _("Supported") or (caps.rich_progress == false and _("Not supported") or _("Unknown"))
     local annotations = caps.annotations == true and _("Supported") or (caps.annotations == false and _("Not supported") or _("Unknown"))
     local reading_statistics = caps.reading_statistics == true and _("Supported") or (caps.reading_statistics == false and _("Not supported") or _("Unknown"))
+    local settings_backups = caps.settings_backups == true and _("Supported") or (caps.settings_backups == false and _("Not supported") or _("Unknown"))
     local device_identity = caps.device_registration == true
         and (caps.device_registered == true and _("Registered") or _("Supported"))
         or (caps.device_registration == false and _("Not supported") or _("Unknown"))
@@ -3032,6 +3289,7 @@ function ProgressSyncDeluxe:showServer(server)
     addStatusRow(_("Device Identity"), device_identity)
     addStatusRow(_("Annotations"), annotations)
     addStatusRow(_("Reading Statistics"), reading_statistics)
+    addStatusRow(_("Settings Backups"), settings_backups)
     addStatusRow(_("Matching Method"), matching)
     addStatusRow(_("Account Recovery"), recovery)
 
@@ -3817,6 +4075,7 @@ function ProgressSyncDeluxe:onReaderReady()
     self:scheduleAutomaticUpdateCheck()
     if NetworkMgr:isOnline() then
         UIManager:scheduleIn(2, function() self:syncReadingStatisticsForAll() end)
+        UIManager:scheduleIn(2.5, function() self:syncSettingsBackupsForAll() end)
     end
     if self:canAutoSync() then
         UIManager:nextTick(function() self:autoSyncPull() end)
@@ -3833,6 +4092,7 @@ end
 function ProgressSyncDeluxe:onResume()
     if NetworkMgr:isOnline() then
         UIManager:scheduleIn(1.5, function() self:syncReadingStatisticsForAll() end)
+        UIManager:scheduleIn(2, function() self:syncSettingsBackupsForAll() end)
     end
     if not self:canAutoSync() then return end
     UIManager:scheduleIn(1, function() self:autoSyncPull() end)
@@ -3845,6 +4105,7 @@ end
 function ProgressSyncDeluxe:onNetworkConnected()
     self:scheduleAutomaticUpdateCheck()
     UIManager:scheduleIn(1, function() self:syncReadingStatisticsForAll() end)
+    UIManager:scheduleIn(1.5, function() self:syncSettingsBackupsForAll() end)
     if not self:canAutoSync() then return end
     UIManager:scheduleIn(0.5, function()
         self:retryQueue(false, function()
@@ -3856,7 +4117,10 @@ end
 function ProgressSyncDeluxe:onCloseDocument()
     if self.preview then self.preview = nil; return end
     self:autoSyncPush()
-    if NetworkMgr:isOnline() then self:syncReadingStatisticsForAll() end
+    if NetworkMgr:isOnline() then
+        self:syncReadingStatisticsForAll()
+        self:syncSettingsBackupsForAll()
+    end
 end
 
 return ProgressSyncDeluxe

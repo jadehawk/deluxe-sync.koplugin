@@ -16,6 +16,7 @@ local defaults = {
     known_documents = {},
     annotation_sync = {},
     reading_statistics_sync = {},
+    settings_backup_sync = {},
     settings = {
         auto_sync = false,
         sync_forward = "prompt",
@@ -45,6 +46,7 @@ function ServerStore:new()
     o.data.known_documents = o.data.known_documents or {}
     o.data.annotation_sync = o.data.annotation_sync or {}
     o.data.reading_statistics_sync = o.data.reading_statistics_sync or {}
+    o.data.settings_backup_sync = o.data.settings_backup_sync or {}
     o.data.settings = o.data.settings or deepCopy(defaults.settings)
     if o.data.settings.auto_sync == nil then o.data.settings.auto_sync = false end
     if o.data.settings.sync_forward == nil then o.data.settings.sync_forward = "prompt" end
@@ -139,6 +141,11 @@ function ServerStore:upsertServer(server)
         reading_statistics_version = nil,
         reading_statistics_events = nil,
         reading_statistics_direction = nil,
+        settings_backups = nil,
+        settings_backups_version = nil,
+        settings_snapshot_schema_version = nil,
+        settings_restore = nil,
+        settings_restore_direction = nil,
     }
     for i, existing in ipairs(self.data.servers) do
         if existing.id == server.id then
@@ -160,6 +167,7 @@ function ServerStore:removeServer(id)
     self.data.known_documents[id] = nil
     self.data.annotation_sync[id] = nil
     self.data.reading_statistics_sync[id] = nil
+    self.data.settings_backup_sync[id] = nil
     for canonical_document, aliases in pairs(self.data.aliases or {}) do
         local filtered = {}
         for _, alias in ipairs(aliases) do
@@ -279,6 +287,28 @@ function ServerStore:saveReadingStatisticsState(server_id, state)
     if not server_id or type(state) ~= "table" then return false end
     self.data.reading_statistics_sync = self.data.reading_statistics_sync or {}
     self.data.reading_statistics_sync[server_id] = state
+    self:flush()
+    return true
+end
+
+function ServerStore:getSettingsBackupState(server_id)
+    if not server_id then
+        return { checksum = nil, koreader_version = nil, snapshot_id = nil, uploaded_at = 0 }
+    end
+    self.data.settings_backup_sync = self.data.settings_backup_sync or {}
+    local state = self.data.settings_backup_sync[server_id]
+    if type(state) ~= "table" then
+        state = { checksum = nil, koreader_version = nil, snapshot_id = nil, uploaded_at = 0 }
+        self.data.settings_backup_sync[server_id] = state
+    end
+    state.uploaded_at = math.max(0, math.floor(tonumber(state.uploaded_at) or 0))
+    return state
+end
+
+function ServerStore:saveSettingsBackupState(server_id, state)
+    if not server_id or type(state) ~= "table" then return false end
+    self.data.settings_backup_sync = self.data.settings_backup_sync or {}
+    self.data.settings_backup_sync[server_id] = state
     self:flush()
     return true
 end

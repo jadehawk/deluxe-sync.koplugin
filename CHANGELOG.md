@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.1.8] - 2026-09-09
+
+### Added
+
+- Added capability-gated Stage 9 KOReader settings backups for enhanced servers advertising settings-backup protocol v1.
+- Added client-side sanitization with an explicit credential/device-identity deny-list before any settings snapshot leaves the reader, plus server-side sanitization as a second boundary.
+- Added versioned per-device snapshots with deterministic checksums so unchanged settings are not uploaded repeatedly.
+- Added same-device restore requests with an on-reader **Later / Restore / Reject Restore Request** confirmation flow; the server cannot silently apply settings.
+- Added Settings Backups status to server capability/details cards and automatic backup checks on reader ready, resume, reconnect, capability refresh, and document close.
+
+### Changed
+
+- Restore applies only the sanitized backup overlay and preserves excluded local credentials/device identity; array settings replace their previous arrays instead of being recursively merged.
+- Standard KOSync servers remain unchanged and receive no settings-backup or restore traffic.
+
+### Tests
+
+- Added executable Lua 5.1 coverage for settings sanitization, deterministic capture, array restore semantics, per-server dedup state, API wiring, capability gating, lifecycle triggers, and explicit restore confirmation ordering.
+
 ## [0.1.7] - 2026-09-09
 
 ### Added
