@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.1.11] - 2026-09-10
+
+### Added
+
+- Added protected cross-device Deluxe-Sync profile migration for enhanced Techy-Notes servers, including every configured server URL, username, supported plugin preference, and the saved authentication needed to reconnect to the same existing remote account.
+- Added reader-side discovery of complete setup backups from another registered reader, followed by explicit Prepare Restore and Restore Setup confirmation steps.
+
+### Changed
+
+- Deluxe-Sync authentication is carried separately from public profile metadata, targeted only to the selected reader, and restored onto the original URL/username pair; migration does not create or register replacement remote accounts.
+- Cross-device profile restore revalidates the pending targeted request immediately before changing local server configuration, rejects incomplete authentication sets, and preserves the destination reader's local device identity and sync caches.
+- Settings-backup deduplication now includes the protected Deluxe profile checksum, while readers that already backed up an identical migrated profile are no longer offered that same setup again.
+
+### Tests
+
+- Added Lua 5.1 coverage for protected profile capture/apply, complete-authentication enforcement, candidate discovery, targeted restore requests, explicit confirmation ordering, pending-request revalidation, acknowledgement, capability gating, lifecycle integration, and existing-account preservation.
+
+## [0.1.10] - 2026-09-09
+
+### Changed
+
+- Settings snapshots now exclude KOReader runtime/session state such as last-opened navigation, transient UI history, current frontlight/night-mode state, and closed rotation state, so ordinary reading no longer creates backup churn.
+- Same-device restore now revalidates the pending server request immediately before applying settings, so a snapshot deleted or cancelled while the confirmation dialog is open cannot be restored from stale in-memory data.
+
+### Tests
+
+- Extended Lua 5.1 coverage to prove volatile runtime changes keep the same snapshot checksum, real preference changes produce a new checksum, and restores preserve the reader's current runtime/navigation state.
+
 ## [0.1.9] - 2026-09-09
 
 ### Changed

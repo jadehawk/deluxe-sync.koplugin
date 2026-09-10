@@ -33,6 +33,9 @@ contains(store, 'settings_restore = nil', "server capability cache must include 
 
 contains(adapter, 'local sensitive_key_parts = {', "client-side secret deny-list missing")
 contains(adapter, 'device_id = true', "device identity must be excluded from snapshots")
+contains(adapter, 'local volatile_exact_keys = {', "KOReader runtime-state exclusion list missing")
+contains(adapter, 'lastfile = true', "last-opened document must not churn settings snapshots")
+contains(adapter, 'frontlight_intensity = true', "current frontlight state must not churn settings snapshots")
 contains(adapter, 'function SettingsBackupAdapter.capture()', "settings capture helper missing")
 contains(adapter, 'function SettingsBackupAdapter.apply(settings)', "same-device settings restore helper missing")
 
@@ -53,7 +56,8 @@ contains(main, 'function ProgressSyncDeluxe:showSettingsRestorePrompt(server, re
 contains(main, 'text = _("Later")', "restore prompt must allow deferral")
 contains(main, 'text = _("Restore")', "restore prompt must require explicit restore action")
 contains(main, 'text = _("Reject Restore Request")', "restore prompt must allow explicit rejection")
-contains(main, 'SettingsBackupAdapter.apply(snapshot.settings)', "settings must only apply after reader confirmation")
+contains(main, 'SettingsBackupAdapter.apply(current_snapshot.settings)', "settings must only apply from a still-pending snapshot after reader confirmation")
+contains(main, 'This restore request is no longer pending. No settings were changed.', "stale restore prompts must fail closed")
 contains(main, 'client:completeSettingsRestore(server.username, server.userkey', "reader restore decision must be acknowledged")
 contains(main, 'settings_backups = true', "device registration must advertise settings-backup support")
 contains(main, '_("Settings Backups")', "server capability UI must expose settings backups")
@@ -66,7 +70,9 @@ contains(main, 'UIManager:scheduleIn(1, function() self:refreshEnhancedCapabilit
 contains(main, 'self:syncSettingsBackupsForAll()', "normal lifecycle must trigger settings backup sync")
 
 local prompt_position = assert(main:find('text = _("Restore")', 1, true))
-local apply_position = assert(main:find('SettingsBackupAdapter.apply(snapshot.settings)', prompt_position, true))
-assert(apply_position > prompt_position, "settings restore must not apply before explicit reader confirmation")
+local revalidate_position = assert(main:find('client:getCurrentSettingsRestore(server.username, server.userkey', prompt_position, true))
+local apply_position = assert(main:find('SettingsBackupAdapter.apply(current_snapshot.settings)', revalidate_position, true))
+assert(revalidate_position > prompt_position, "restore request must be revalidated after explicit reader confirmation")
+assert(apply_position > revalidate_position, "settings restore must not apply before pending-request revalidation")
 
 print("settings_backup_sync_test.lua: OK")

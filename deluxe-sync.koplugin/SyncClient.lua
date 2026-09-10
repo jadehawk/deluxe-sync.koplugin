@@ -274,6 +274,38 @@ function SyncClient:completeSettingsRestore(username, userkey, request_id, paylo
     self:_async("complete_settings_restore", username, userkey, payload, callback)
 end
 
+function SyncClient:putDeluxeProfile(username, userkey, payload, callback)
+    self:_async("put_deluxe_profile", username, userkey, payload, callback)
+end
+
+function SyncClient:getDeluxeProfileCandidate(username, userkey, legacy_device_id, koreader_device_id, callback)
+    self:_async("get_deluxe_profile_candidate", username, userkey, {
+        legacy_device_id = legacy_device_id,
+        koreader_device_id = koreader_device_id,
+    }, callback)
+end
+
+function SyncClient:requestDeluxeProfileRestore(username, userkey, profile_id, legacy_device_id, koreader_device_id, callback)
+    self:_async("request_deluxe_profile_restore", username, userkey, {
+        profile_id = profile_id,
+        legacy_device_id = legacy_device_id,
+        koreader_device_id = koreader_device_id,
+    }, callback)
+end
+
+function SyncClient:getCurrentDeluxeProfileRestore(username, userkey, legacy_device_id, koreader_device_id, callback)
+    self:_async("get_current_deluxe_profile_restore", username, userkey, {
+        legacy_device_id = legacy_device_id,
+        koreader_device_id = koreader_device_id,
+    }, callback)
+end
+
+function SyncClient:completeDeluxeProfileRestore(username, userkey, request_id, payload, callback)
+    payload = payload or {}
+    payload.request_id = request_id
+    self:_async("complete_deluxe_profile_restore", username, userkey, payload, callback)
+end
+
 function SyncClient:getProgress(username, userkey, document, callback)
     self:_async("get_progress", username, userkey, { document = document }, callback)
 end

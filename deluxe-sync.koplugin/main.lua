@@ -70,6 +70,7 @@ local LocalLibrary
 local AnnotationAdapter
 local ReadingStatisticsAdapter
 local SettingsBackupAdapter
+local DeluxeProfileAdapter
 
 local ProgressSyncDeluxe = WidgetContainer:extend{
     name = "progresssyncdeluxe",
@@ -206,6 +207,10 @@ function ProgressSyncDeluxe:init()
     self.settings_backup_in_flight = {}
     self.settings_restore_in_flight = {}
     self.settings_restore_seen = {}
+    self.deluxe_profile_in_flight = {}
+    self.deluxe_profile_candidate_seen = {}
+    self.deluxe_profile_restore_in_flight = {}
+    self.deluxe_profile_restore_seen = {}
     ensureReaderMenuOrder()
 
     -- Register first so an initialization failure cannot make the plugin vanish
@@ -227,6 +232,7 @@ function ProgressSyncDeluxe:init()
         AnnotationAdapter = require("AnnotationAdapter")
         ReadingStatisticsAdapter = require("ReadingStatisticsAdapter")
         SettingsBackupAdapter = require("SettingsBackupAdapter")
+        DeluxeProfileAdapter = require("DeluxeProfileAdapter")
         self.store = ServerStore:new()
         DiagnosticLog.configure(self.store.data.settings.logging_enabled ~= false)
         self.queue = SyncQueue:new()
@@ -667,6 +673,22 @@ function ProgressSyncDeluxe:serverSupportsSettingsRestore(server)
         and (direction == nil or direction == "server_request_client_confirm")
 end
 
+function ProgressSyncDeluxe:serverSupportsDeluxeProfiles(server)
+    local capabilities = server and server.capabilities or {}
+    return DeluxeProfileAdapter ~= nil
+        and capabilities.deluxe_profiles == true
+        and (tonumber(capabilities.deluxe_profiles_version) or 0) >= 1
+        and (tonumber(capabilities.deluxe_profile_schema_version) or 0) >= DeluxeProfileAdapter.SCHEMA_VERSION
+end
+
+function ProgressSyncDeluxe:serverSupportsDeluxeProfileRestore(server)
+    local capabilities = server and server.capabilities or {}
+    local direction = capabilities.deluxe_profile_restore_direction
+    return self:serverSupportsDeluxeProfiles(server)
+        and capabilities.deluxe_profile_restore == true
+        and (direction == nil or direction == "cross_device_client_confirm")
+end
+
 function ProgressSyncDeluxe:cacheSettingsBackupCapabilities(server, enhanced_capabilities)
     local backup_version = type(enhanced_capabilities) == "table" and tonumber(enhanced_capabilities.settings_backups_version) or nil
     local schema_version = type(enhanced_capabilities) == "table" and tonumber(enhanced_capabilities.settings_snapshot_schema_version) or nil
@@ -686,16 +708,38 @@ function ProgressSyncDeluxe:cacheSettingsBackupCapabilities(server, enhanced_cap
     return backup_supported, restore_supported
 end
 
+function ProgressSyncDeluxe:cacheDeluxeProfileCapabilities(server, enhanced_capabilities)
+    local profile_version = type(enhanced_capabilities) == "table" and tonumber(enhanced_capabilities.deluxe_profiles_version) or nil
+    local schema_version = type(enhanced_capabilities) == "table" and tonumber(enhanced_capabilities.deluxe_profile_schema_version) or nil
+    local restore_direction = type(enhanced_capabilities) == "table" and enhanced_capabilities.deluxe_profile_restore_direction or nil
+    local profile_supported = type(enhanced_capabilities) == "table"
+        and DeluxeProfileAdapter ~= nil
+        and enhanced_capabilities.deluxe_profiles == true
+        and (profile_version or 0) >= 1
+        and (schema_version or 0) >= DeluxeProfileAdapter.SCHEMA_VERSION
+    local restore_supported = profile_supported
+        and enhanced_capabilities.deluxe_profile_restore == true
+        and (restore_direction == nil or restore_direction == "cross_device_client_confirm")
+    self.store:setCapability(server.id, "deluxe_profiles", profile_supported)
+    self.store:setCapability(server.id, "deluxe_profiles_version", profile_version)
+    self.store:setCapability(server.id, "deluxe_profile_schema_version", schema_version)
+    self.store:setCapability(server.id, "deluxe_profile_restore", restore_supported)
+    self.store:setCapability(server.id, "deluxe_profile_restore_direction", restore_direction)
+    return profile_supported, restore_supported
+end
+
 function ProgressSyncDeluxe:refreshSettingsBackupCapabilities(server, client)
     client = client or self:newClient(server)
     local ok, status, body = client:capabilities()
     local data = decode(body)
     if ok and (status == 404 or status == 405) then
+        self:cacheDeluxeProfileCapabilities(server, nil)
         return self:cacheSettingsBackupCapabilities(server, nil)
     end
     if not ok or status ~= 200 or type(data) ~= "table" or type(data.capabilities) ~= "table" then
         return false, false
     end
+    self:cacheDeluxeProfileCapabilities(server, data.capabilities)
     return self:cacheSettingsBackupCapabilities(server, data.capabilities)
 end
 
@@ -732,6 +776,7 @@ function ProgressSyncDeluxe:refreshEnhancedCapabilities(server, client)
         self.store:setCapability(server.id, "annotations_version", annotation_version)
         self:cacheReadingStatisticsCapabilities(server, enhanced_capabilities)
         self:cacheSettingsBackupCapabilities(server, enhanced_capabilities)
+        self:cacheDeluxeProfileCapabilities(server, enhanced_capabilities)
     end
 
     if ok and (status == 404 or status == 405) then
@@ -752,6 +797,7 @@ function ProgressSyncDeluxe:refreshEnhancedCapabilitiesForAll()
             local client = self:newClient(server)
             self:refreshEnhancedCapabilities(server, client)
             self:checkSettingsRestoreForServer(server, client)
+            self:checkDeluxeProfileMigrationForServer(server, client)
             self:syncReadingStatisticsForServer(server)
             self:syncSettingsBackupForServer(server)
         end)
@@ -915,18 +961,34 @@ function ProgressSyncDeluxe:showSettingsRestorePrompt(server, restore, client, r
                 { text = _("Later"), callback = function() UIManager:close(dialog) end },
                 { text = _("Restore"), callback = function()
                     UIManager:close(dialog)
-                    local applied, result = SettingsBackupAdapter.apply(snapshot.settings)
-                    if not applied then
-                        acknowledge("failed", tostring(result or "Unable to apply settings"), _("The settings backup could not be applied."))
-                        return
-                    end
-                    self.store:saveSettingsBackupState(server.id, {
-                        checksum = snapshot.checksum or result.checksum,
-                        koreader_version = snapshot.koreader_version or registration.koreader_version,
-                        snapshot_id = snapshot.snapshot_id,
-                        uploaded_at = os.time(),
-                    })
-                    acknowledge("applied", "Confirmed and applied on reader", _("Settings restored. Restart KOReader to ensure every restored setting takes effect."))
+                    client:getCurrentSettingsRestore(server.username, server.userkey, tostring(self.store.data.device_id), registration.koreader_device_id, function(ok, status, body)
+                        local data = decode(body)
+                        local current = type(data) == "table" and data.restore or nil
+                        local current_snapshot = type(current) == "table" and current.snapshot or nil
+                        if not ok or status ~= 200 then
+                            showResult(_("Unable to verify that this restore request is still pending. No settings were changed."))
+                            return
+                        end
+                        if type(current) ~= "table"
+                            or tonumber(current.request_id) ~= request_id
+                            or type(current_snapshot) ~= "table"
+                            or tostring(current_snapshot.snapshot_id or "") ~= tostring(snapshot.snapshot_id or "") then
+                            showResult(_("This restore request is no longer pending. No settings were changed."))
+                            return
+                        end
+                        local applied, result = SettingsBackupAdapter.apply(current_snapshot.settings)
+                        if not applied then
+                            acknowledge("failed", tostring(result or "Unable to apply settings"), _("The settings backup could not be applied."))
+                            return
+                        end
+                        self.store:saveSettingsBackupState(server.id, {
+                            checksum = current_snapshot.checksum or result.checksum,
+                            koreader_version = current_snapshot.koreader_version or registration.koreader_version,
+                            snapshot_id = current_snapshot.snapshot_id,
+                            uploaded_at = os.time(),
+                        })
+                        acknowledge("applied", "Confirmed and applied on reader", _("Settings restored. Restart KOReader to ensure every restored setting takes effect."))
+                    end)
                 end },
             },
             {{ text = _("Reject Restore Request"), callback = function()
@@ -979,6 +1041,244 @@ function ProgressSyncDeluxe:checkSettingsRestoreForServer(server, client, callba
     end)
 end
 
+function ProgressSyncDeluxe:completeDeluxeProfileRestoreRequest(server, client, registration, request_id, status, message, callback)
+    callback = callback or function() end
+    client:completeDeluxeProfileRestore(server.username, server.userkey, request_id, {
+        legacy_device_id = tostring(self.store.data.device_id),
+        koreader_device_id = registration.koreader_device_id,
+        status = status,
+        message = message,
+    }, function(ok, response_status, body)
+        local success = ok and response_status == 200
+        callback(success, response_status, success and nil or (serverResponseMessage(body) or body or "Deluxe-Sync profile restore acknowledgement failed"))
+    end)
+end
+
+function ProgressSyncDeluxe:showDeluxeProfileRestorePrompt(server, restore, client, registration)
+    local request_id = tonumber(type(restore) == "table" and restore.request_id or nil)
+    local profile = type(restore) == "table" and restore.profile or nil
+    local portable = type(profile) == "table" and profile.profile or nil
+    local access = type(restore) == "table" and restore.access or nil
+    local profile_id = type(profile) == "table" and tostring(profile.profile_id or "") or ""
+    if not request_id or profile_id == "" or type(portable) ~= "table" or type(portable.servers) ~= "table" or type(access) ~= "table" then return false end
+
+    local prompt_key = tostring(server.id or server.url or "server") .. ":" .. tostring(request_id)
+    if self.deluxe_profile_restore_seen[prompt_key] then return false end
+    self.deluxe_profile_restore_seen[prompt_key] = true
+
+    local created_at = tonumber(profile.created_at) or 0
+    local created_label = created_at > 0 and os.date("%Y-%m-%d %H:%M", created_at) or _("Unknown date")
+    local source_name = tostring(profile.source_device_name or _("Another reader"))
+    local server_count = math.max(0, math.floor(tonumber(profile.server_count) or #portable.servers))
+    local dialog
+
+    local function showResult(text)
+        UIManager:show(InfoMessage:new{ text = text, timeout = 6 })
+    end
+
+    local function acknowledge(status, message, result_message)
+        self:completeDeluxeProfileRestoreRequest(server, client, registration, request_id, status, message, function(ok, response_status, error_message)
+            if ok then
+                showResult(result_message)
+            else
+                showResult(T(_("Deluxe-Sync changed locally, but the server acknowledgement failed (%1). %2"), tostring(response_status or "network"), tostring(error_message or "Please try again later.")))
+            end
+        end)
+    end
+
+    dialog = ButtonDialog:new{
+        title = _("Restore Deluxe-Sync server setup?"),
+        title_align = "left",
+        buttons = {
+            {{
+                text = T(_("From: %1\nBackup: %2\nConfigured servers: %3\n\nThis restores the same server URLs, usernames, and saved authentication so existing synced progress stays attached to the same accounts. No new accounts are created."), source_name, created_label, tostring(server_count)),
+                enabled = false,
+            }},
+            {
+                { text = _("Later"), callback = function() UIManager:close(dialog) end },
+                { text = _("Restore Setup"), callback = function()
+                    UIManager:close(dialog)
+                    client:getCurrentDeluxeProfileRestore(server.username, server.userkey, tostring(self.store.data.device_id), registration.koreader_device_id, function(ok, status, body)
+                        local data = decode(body)
+                        local current = type(data) == "table" and data.restore or nil
+                        local current_profile = type(current) == "table" and current.profile or nil
+                        local current_portable = type(current_profile) == "table" and current_profile.profile or nil
+                        local current_access = type(current) == "table" and current.access or nil
+                        if not ok or status ~= 200 then
+                            showResult(_("Unable to verify that this Deluxe-Sync restore request is still pending. No server setup was changed."))
+                            return
+                        end
+                        if type(current) ~= "table"
+                            or tonumber(current.request_id) ~= request_id
+                            or type(current_profile) ~= "table"
+                            or tostring(current_profile.profile_id or "") ~= profile_id
+                            or type(current_portable) ~= "table"
+                            or type(current_portable.servers) ~= "table"
+                            or type(current_access) ~= "table" then
+                            showResult(_("This Deluxe-Sync restore request is no longer pending. No server setup was changed."))
+                            return
+                        end
+                        local applied, result = DeluxeProfileAdapter.apply(self.store, {
+                            servers = current_portable.servers,
+                            settings = current_portable.settings,
+                            access = current_access,
+                        })
+                        if not applied then
+                            acknowledge("failed", tostring(result or "Unable to apply Deluxe-Sync profile"), _("The Deluxe-Sync server setup could not be restored."))
+                            return
+                        end
+                        acknowledge("applied", "Confirmed and applied on reader", T(_("Deluxe-Sync restored %1 configured server account(s). Restart KOReader to complete the migration."), tostring(result.server_count or server_count)))
+                        UIManager:scheduleIn(1, function() self:refreshEnhancedCapabilitiesForAll() end)
+                    end)
+                end },
+            },
+            {{ text = _("Reject Restore Request"), callback = function()
+                UIManager:close(dialog)
+                acknowledge("rejected", "Rejected on reader", _("Deluxe-Sync restore request rejected. No server setup was changed."))
+            end }},
+        },
+    }
+    suppressDialogContainerHolds(dialog)
+    UIManager:show(dialog)
+    return true
+end
+
+function ProgressSyncDeluxe:checkDeluxeProfileRestoreForServer(server, client, callback)
+    callback = callback or function() end
+    if not self.store or not DeluxeProfileAdapter or not server or server.enabled == false then
+        callback(false, nil, "Deluxe-Sync profile restore check is unavailable", false)
+        return
+    end
+    client = client or self:newClient(server)
+    local capabilities = server.capabilities or {}
+    if capabilities.deluxe_profiles == nil or capabilities.deluxe_profile_restore == nil then
+        self:refreshSettingsBackupCapabilities(server, client)
+    end
+    if not self:serverSupportsDeluxeProfileRestore(server) then
+        callback(true, 200, "Deluxe-Sync profile restore is not supported", false)
+        return
+    end
+
+    local sync_key = tostring(server.id or server.url or "server")
+    if self.deluxe_profile_restore_in_flight[sync_key] then
+        callback(true, 200, "Deluxe-Sync profile restore check already in progress", true)
+        return
+    end
+    self.deluxe_profile_restore_in_flight[sync_key] = true
+    local registration = self:getDeviceRegistrationPayload()
+    client:getCurrentDeluxeProfileRestore(server.username, server.userkey, tostring(self.store.data.device_id), registration.koreader_device_id, function(ok, status, body)
+        self.deluxe_profile_restore_in_flight[sync_key] = nil
+        local data = decode(body)
+        if not ok or status ~= 200 or type(data) ~= "table" then
+            callback(false, status, serverResponseMessage(body) or body or "Deluxe-Sync profile restore check failed", false)
+            return
+        end
+        if type(data.restore) ~= "table" then
+            callback(true, status, "No pending Deluxe-Sync profile restore", false)
+            return
+        end
+        self:showDeluxeProfileRestorePrompt(server, data.restore, client, registration)
+        callback(true, status, "Deluxe-Sync profile restore confirmation shown", true)
+    end)
+end
+
+function ProgressSyncDeluxe:showDeluxeProfileCandidatePrompt(server, candidate, client, registration)
+    local profile_id = type(candidate) == "table" and tostring(candidate.profile_id or "") or ""
+    local portable = type(candidate) == "table" and candidate.profile or nil
+    if profile_id == "" or type(portable) ~= "table" or type(portable.servers) ~= "table" then return false end
+
+    local prompt_key = tostring(server.id or server.url or "server") .. ":" .. profile_id
+    if self.deluxe_profile_candidate_seen[prompt_key] then return false end
+    self.deluxe_profile_candidate_seen[prompt_key] = true
+
+    local created_at = tonumber(candidate.created_at) or 0
+    local created_label = created_at > 0 and os.date("%Y-%m-%d %H:%M", created_at) or _("Unknown date")
+    local source_name = tostring(candidate.source_device_name or _("Another reader"))
+    local server_count = math.max(0, math.floor(tonumber(candidate.server_count) or #portable.servers))
+    local dialog
+
+    local function showResult(text)
+        UIManager:show(InfoMessage:new{ text = text, timeout = 6 })
+    end
+
+    dialog = ButtonDialog:new{
+        title = _("Deluxe-Sync setup found on another reader"),
+        title_align = "left",
+        buttons = {
+            {{
+                text = T(_("Source: %1\nBackup: %2\nConfigured servers: %3\n\nYou can migrate this complete Deluxe-Sync setup to this reader, including the saved authentication for each existing server account."), source_name, created_label, tostring(server_count)),
+                enabled = false,
+            }},
+            {
+                { text = _("Later"), callback = function() UIManager:close(dialog) end },
+                { text = _("Prepare Restore"), callback = function()
+                    UIManager:close(dialog)
+                    client:requestDeluxeProfileRestore(server.username, server.userkey, profile_id, tostring(self.store.data.device_id), registration.koreader_device_id, function(ok, status, body)
+                        if not ok or status ~= 202 then
+                            showResult(T(_("Unable to prepare Deluxe-Sync restore (%1). %2"), tostring(status or "network"), tostring(serverResponseMessage(body) or body or "Please try again.")))
+                            return
+                        end
+                        self:checkDeluxeProfileRestoreForServer(server, client, function(check_ok, _, message, pending)
+                            if not check_ok or not pending then
+                                showResult(tostring(message or _("The restore request was created, but its confirmation could not be loaded yet. It will be checked again on the next network refresh.")))
+                            end
+                        end)
+                    end)
+                end },
+            },
+        },
+    }
+    suppressDialogContainerHolds(dialog)
+    UIManager:show(dialog)
+    return true
+end
+
+function ProgressSyncDeluxe:checkDeluxeProfileCandidateForServer(server, client, callback)
+    callback = callback or function() end
+    if not self.store or not DeluxeProfileAdapter or not server or server.enabled == false then
+        callback(false, nil, "Deluxe-Sync profile candidate check is unavailable")
+        return
+    end
+    client = client or self:newClient(server)
+    local capabilities = server.capabilities or {}
+    if capabilities.deluxe_profiles == nil or capabilities.deluxe_profile_restore == nil then
+        self:refreshSettingsBackupCapabilities(server, client)
+    end
+    if not self:serverSupportsDeluxeProfileRestore(server) then
+        callback(true, 200, "Deluxe-Sync profile migration is not supported")
+        return
+    end
+
+    local sync_key = tostring(server.id or server.url or "server")
+    if self.deluxe_profile_in_flight[sync_key] then
+        callback(true, 200, "Deluxe-Sync profile candidate check already in progress")
+        return
+    end
+    self.deluxe_profile_in_flight[sync_key] = true
+    local registration = self:getDeviceRegistrationPayload()
+    client:getDeluxeProfileCandidate(server.username, server.userkey, tostring(self.store.data.device_id), registration.koreader_device_id, function(ok, status, body)
+        self.deluxe_profile_in_flight[sync_key] = nil
+        local data = decode(body)
+        if not ok or status ~= 200 or type(data) ~= "table" then
+            callback(false, status, serverResponseMessage(body) or body or "Deluxe-Sync profile candidate check failed")
+            return
+        end
+        if type(data.profile) ~= "table" then
+            callback(true, status, "No Deluxe-Sync profile migration candidate")
+            return
+        end
+        self:showDeluxeProfileCandidatePrompt(server, data.profile, client, registration)
+        callback(true, status, "Deluxe-Sync profile migration candidate shown")
+    end)
+end
+
+function ProgressSyncDeluxe:checkDeluxeProfileMigrationForServer(server, client)
+    client = client or self:newClient(server)
+    self:checkDeluxeProfileRestoreForServer(server, client, function(ok, _, _, pending)
+        if ok and not pending then self:checkDeluxeProfileCandidateForServer(server, client) end
+    end)
+end
+
 function ProgressSyncDeluxe:syncSettingsBackupForServer(server, callback)
     callback = callback or function() end
     if not self.store or not SettingsBackupAdapter or not server or server.enabled == false then
@@ -993,7 +1293,7 @@ function ProgressSyncDeluxe:syncSettingsBackupForServer(server, callback)
     end
     local client = self:newClient(server)
     local capabilities = server.capabilities or {}
-    if capabilities.settings_backups == nil then
+    if capabilities.settings_backups == nil or capabilities.deluxe_profiles == nil then
         self:refreshSettingsBackupCapabilities(server, client)
     end
     if not self:serverSupportsSettingsBackups(server) then
@@ -1006,10 +1306,21 @@ function ProgressSyncDeluxe:syncSettingsBackupForServer(server, callback)
         callback(false, nil, capture_error or "Unable to capture KOReader settings")
         return
     end
+
+    local deluxe_capture, deluxe_capture_error
+    if self:serverSupportsDeluxeProfiles(server) and DeluxeProfileAdapter then
+        deluxe_capture, deluxe_capture_error = DeluxeProfileAdapter.capture(self.store)
+        if not deluxe_capture and DiagnosticLog then
+            DiagnosticLog.log("deluxe profile backup", serverLabel(server), "ok", false, "message", deluxe_capture_error or "Unable to capture Deluxe-Sync profile")
+        end
+    end
+
     local registration = self:getDeviceRegistrationPayload()
     local stored_state = self.store:getSettingsBackupState(server.id)
+    local profile_unchanged = not deluxe_capture or stored_state.deluxe_profile_checksum == deluxe_capture.checksum
     local unchanged = stored_state.checksum == captured.checksum
         and tostring(stored_state.koreader_version or "") == tostring(registration.koreader_version or "")
+        and profile_unchanged
 
     local function finish(ok, status, message)
         self.settings_backup_in_flight[sync_key] = nil
@@ -1018,6 +1329,7 @@ function ProgressSyncDeluxe:syncSettingsBackupForServer(server, callback)
         end
         if ok then
             self:checkSettingsRestoreForServer(server, client)
+            self:checkDeluxeProfileMigrationForServer(server, client)
         end
         callback(ok, status, message)
     end
@@ -1028,7 +1340,7 @@ function ProgressSyncDeluxe:syncSettingsBackupForServer(server, callback)
         return
     end
 
-    client:putSettingsBackup(server.username, server.userkey, {
+    local payload = {
         legacy_device_id = tostring(self.store.data.device_id),
         koreader_device_id = registration.koreader_device_id,
         device = tostring(Device.model or "KOReader device"),
@@ -1036,7 +1348,16 @@ function ProgressSyncDeluxe:syncSettingsBackupForServer(server, callback)
         schema_version = SettingsBackupAdapter.SCHEMA_VERSION,
         client_redacted_count = captured.redacted_count,
         settings = captured.settings,
-    }, function(ok, status, body)
+    }
+    if deluxe_capture then
+        payload.deluxe_profile = {
+            servers = deluxe_capture.profile.servers,
+            settings = deluxe_capture.profile.settings,
+            access = deluxe_capture.access,
+        }
+    end
+
+    client:putSettingsBackup(server.username, server.userkey, payload, function(ok, status, body)
         local data = decode(body)
         if not ok or status ~= 200 or type(data) ~= "table" or type(data.snapshot) ~= "table" then
             finish(false, status, serverResponseMessage(body) or body or "Settings backup upload failed")
@@ -1044,6 +1365,7 @@ function ProgressSyncDeluxe:syncSettingsBackupForServer(server, callback)
         end
         self.store:saveSettingsBackupState(server.id, {
             checksum = captured.checksum,
+            deluxe_profile_checksum = deluxe_capture and deluxe_capture.checksum or stored_state.deluxe_profile_checksum,
             koreader_version = registration.koreader_version,
             snapshot_id = data.snapshot.snapshot_id,
             uploaded_at = os.time(),
@@ -1233,6 +1555,8 @@ function ProgressSyncDeluxe:getDeviceRegistrationPayload()
             annotations = true,
             reading_statistics = true,
             settings_backups = true,
+            deluxe_profiles = true,
+            deluxe_profile_restore = true,
         },
     }
 end

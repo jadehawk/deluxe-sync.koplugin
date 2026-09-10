@@ -2,17 +2,19 @@
 
 Deluxe-Sync is a KOReader plugin that extends the built-in KOSync workflow to multiple independent KOReader-compatible servers.
 
-Current plugin version: **0.1.9**
+Current plugin version: **0.1.11**
 
 - Enhanced Techy-Notes servers can register one durable physical device using the existing Deluxe device ID plus KOReader UUID/model/platform/version metadata; unsupported KOSync servers are unchanged.
 - Enhanced servers advertising annotation sync v1 can synchronize KOReader highlights, notes, and bookmarks with stable IDs, revision conflicts, and deletion tombstones; ordinary KOSync servers receive no annotation traffic.
 - Enhanced servers advertising reading-statistics v1 can receive KOReader's existing `statistics.sqlite3` history through a read-only, resumable, deduplicated upload; Deluxe-Sync never writes to KOReader's live statistics database.
-- Enhanced servers advertising settings-backup v1 can receive sanitized, versioned settings snapshots for the current physical device. Credentials and device identity are filtered on the reader before upload, unchanged snapshots are skipped, and a server-requested restore still requires explicit confirmation on that same reader.
+- Enhanced servers advertising settings-backup v1 can receive sanitized, versioned KOReader settings snapshots. Credentials, device identity, and volatile reader/session state remain excluded from those general snapshots, and same-device restore still requires explicit confirmation.
+- Enhanced Techy-Notes servers can also keep a separately protected Deluxe-Sync profile for cross-device migration. It restores the same configured server URLs, usernames, preferences, and saved authentication keys so the new reader reconnects to the existing remote accounts and their already-synced progress instead of creating new accounts.
+- Cross-device Deluxe-Sync migration is reader-confirmed and revalidated immediately before apply. Protected authentication is delivered only to the specifically targeted reader, and a matching profile already present on that reader is not repeatedly offered.
 - Deluxe-Sync refreshes enhanced server capabilities on every network reconnect and polls pending restore requests before statistics/settings synchronization; server details use compact two-button action rows.
 
 ## Overview
 
-Deluxe-Sync lets you configure multiple KOSync servers and push or pull reading progress across them from one plugin. It remains compatible with standard KOSync servers while detecting optional enhanced capabilities such as metadata, remote library listing, account recovery, rich positions, durable device identity, annotation synchronization, reading statistics, and safe per-device settings backups.
+Deluxe-Sync lets you configure multiple KOSync servers and push or pull reading progress across them from one plugin. It remains compatible with standard KOSync servers while detecting optional enhanced capabilities such as metadata, remote library listing, account recovery, rich positions, durable device identity, annotation synchronization, reading statistics, safe per-device settings backups, and protected Deluxe-Sync profile migration.
 
 Key capabilities include:
 
@@ -28,12 +30,13 @@ Key capabilities include:
 - Server-side logical-book linking on capable enhanced servers, with linked versions presented as one book while raw sync identities remain intact and reversible.
 - Capability-gated KOReader annotation sync on enhanced servers, including highlights, notes, bookmarks, offline-safe revision conflicts, and tombstones.
 - Capability-gated read-only KOReader reading-statistics upload with resumable history import and server-side deduplication.
-- Capability-gated per-device settings backups with client-side secret filtering, checksum deduplication, and same-device reader-confirmed restore.
+- Capability-gated per-device settings backups with client-side secret and runtime-state filtering, checksum deduplication, and same-device reader-confirmed restore. Snapshot checksums track durable preferences rather than last-opened navigation, transient UI history, or current frontlight/night-mode state.
+- Protected cross-device Deluxe-Sync profile migration for capable servers, restoring the original server URLs, usernames, plugin preferences, and saved authentication keys so existing remote accounts and progress are reused without re-registration.
 - Safe remote-position review and preview before accepting a sync.
 - Optional six-digit email account recovery when supported by the server.
 - Built-in GitHub update checks and in-plugin updates.
 
-When Deluxe-Sync starts with no configured servers, it offers the complimentary **Techy-Notes.com** server at `https://sync.techy-notes.com` or lets the user configure a custom KOSync server. The complimentary server supports standard KOSync progress syncing plus metadata, remote library listing, account recovery, rich positions, durable device identity, logical books, annotation synchronization, reading statistics, and safe per-device settings backups. Selecting it does not automatically enable Auto-Sync Documents.
+When Deluxe-Sync starts with no configured servers, it offers the complimentary **Techy-Notes.com** server at `https://sync.techy-notes.com` or lets the user configure a custom KOSync server. The complimentary server supports standard KOSync progress syncing plus metadata, remote library listing, account recovery, rich positions, durable device identity, logical books, annotation synchronization, reading statistics, safe per-device settings backups, and protected Deluxe-Sync profile migration. Selecting it does not automatically enable Auto-Sync Documents.
 
 ## Screenshots
 

@@ -17,6 +17,7 @@ local SettingsBackupAdapter = require("SettingsBackupAdapter")
 local device_key = "device_" .. "id"
 local denied_key_a = "access_" .. "to" .. "ken"
 local denied_key_b = "pass" .. "word_hint"
+local volatile_key = "last" .. "file"
 
 local cyclic = {}
 cyclic.self = cyclic
@@ -29,6 +30,7 @@ local source = {
     a = true,
 }
 source[device_key] = "discard-a"
+source[volatile_key] = "/books/runtime-a.epub"
 source.nested[denied_key_a] = "discard-b"
 source.nested[denied_key_b] = "discard-c"
 
@@ -36,6 +38,7 @@ local first, first_err = SettingsBackupAdapter.sanitize(source)
 assert(first and not first_err, "sanitization failed: " .. tostring(first_err))
 assert(first.settings.a == true and first.settings.z == 2, "safe scalar settings must survive")
 assert(first.settings[device_key] == nil, "device identity must never enter a settings backup")
+assert(first.settings[volatile_key] == nil, "volatile runtime state must never enter a settings backup")
 assert(first.settings.nested.theme == "dark", "safe nested settings must survive")
 assert(first.settings.nested[denied_key_a] == nil, "first denied setting must be removed")
 assert(first.settings.nested[denied_key_b] == nil, "second denied setting must be removed")
@@ -52,6 +55,7 @@ local second_source = {
     z = 2,
 }
 second_source[device_key] = "different-a"
+second_source[volatile_key] = "/books/runtime-b.epub"
 second_source.nested[denied_key_a] = "different-b"
 second_source.nested[denied_key_b] = "different-c"
 local second = assert(SettingsBackupAdapter.sanitize(second_source))
@@ -61,13 +65,21 @@ local comparable = assert(SettingsBackupAdapter.sanitize({
     list = { "one", "two" },
     a = true,
 }))
-assert(second.checksum == comparable.checksum, "denied values must not affect the safe snapshot checksum")
+assert(second.checksum == comparable.checksum, "denied and volatile values must not affect the safe snapshot checksum")
+local changed_preference = assert(SettingsBackupAdapter.sanitize({
+    z = 2,
+    nested = { theme = "light" },
+    list = { "one", "two" },
+    a = true,
+}))
+assert(changed_preference.checksum ~= comparable.checksum, "real user preference changes must create a new snapshot checksum")
 
 local flushed = 0
 local live_nested = { theme = "light", local_only = "keep-local-value" }
 live_nested[denied_key_a] = "keep-local-value-b"
 local live_data = { nested = live_nested, font_size = 20 }
 live_data[device_key] = "keep-local-value-a"
+live_data[volatile_key] = "/books/current.epub"
 G_reader_settings = {
     data = live_data,
     flush = function(self)
@@ -80,11 +92,13 @@ local incoming_nested = { theme = "dark" }
 incoming_nested[denied_key_a] = "discard-d"
 local incoming = { nested = incoming_nested, font_size = 24 }
 incoming[device_key] = "discard-e"
+incoming[volatile_key] = "/books/stale.epub"
 local applied, applied_result = SettingsBackupAdapter.apply(incoming)
 assert(applied, "safe restore overlay must succeed: " .. tostring(applied_result))
 assert(G_reader_settings.data.font_size == 24, "safe scalar setting must be restored")
 assert(G_reader_settings.data.nested.theme == "dark", "safe nested setting must be restored")
 assert(G_reader_settings.data[device_key] == "keep-local-value-a", "restore must preserve local device identity")
+assert(G_reader_settings.data[volatile_key] == "/books/current.epub", "restore must preserve live runtime navigation state")
 assert(G_reader_settings.data.nested[denied_key_a] == "keep-local-value-b", "restore must preserve denied local settings")
 assert(G_reader_settings.data.nested.local_only == "keep-local-value", "overlay restore must not delete settings absent from the backup")
 assert(flushed == 1, "successful restore must flush settings once")

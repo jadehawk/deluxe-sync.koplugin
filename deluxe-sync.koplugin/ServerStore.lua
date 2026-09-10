@@ -146,6 +146,11 @@ function ServerStore:upsertServer(server)
         settings_snapshot_schema_version = nil,
         settings_restore = nil,
         settings_restore_direction = nil,
+        deluxe_profiles = nil,
+        deluxe_profiles_version = nil,
+        deluxe_profile_schema_version = nil,
+        deluxe_profile_restore = nil,
+        deluxe_profile_restore_direction = nil,
     }
     for i, existing in ipairs(self.data.servers) do
         if existing.id == server.id then
@@ -293,12 +298,12 @@ end
 
 function ServerStore:getSettingsBackupState(server_id)
     if not server_id then
-        return { checksum = nil, koreader_version = nil, snapshot_id = nil, uploaded_at = 0 }
+        return { checksum = nil, deluxe_profile_checksum = nil, koreader_version = nil, snapshot_id = nil, uploaded_at = 0 }
     end
     self.data.settings_backup_sync = self.data.settings_backup_sync or {}
     local state = self.data.settings_backup_sync[server_id]
     if type(state) ~= "table" then
-        state = { checksum = nil, koreader_version = nil, snapshot_id = nil, uploaded_at = 0 }
+        state = { checksum = nil, deluxe_profile_checksum = nil, koreader_version = nil, snapshot_id = nil, uploaded_at = 0 }
         self.data.settings_backup_sync[server_id] = state
     end
     state.uploaded_at = math.max(0, math.floor(tonumber(state.uploaded_at) or 0))

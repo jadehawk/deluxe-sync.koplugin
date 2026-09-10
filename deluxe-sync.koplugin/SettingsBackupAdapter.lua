@@ -31,9 +31,31 @@ local denied_exact_keys = {
     proxy_password = true,
 }
 
+-- KOReader persists a handful of current-session/runtime values in
+-- settings.reader.lua. They are not durable preferences and change during
+-- ordinary reading, navigation, suspend/resume, or automatic frontlight use.
+-- Excluding them prevents normal reader activity from creating backup churn
+-- and avoids restoring stale navigation/device state from an older snapshot.
+local volatile_exact_keys = {
+    lastfile = true,
+    lastdir = true,
+    filemanagermenu_tab_index = true,
+    history_filter = true,
+    highlight_dialog_position = true,
+    cre_fonts_recently_selected = true,
+    wikipedia_last_language = true,
+    last_migration_date = true,
+    reader_timer_remain_time = true,
+    frontlight_intensity = true,
+    frontlight_warmth = true,
+    is_frontlight_on = true,
+    night_mode = true,
+    closed_rotation_mode = true,
+}
+
 local function shouldDenyKey(key)
     local normalized = tostring(key or ""):lower()
-    if denied_exact_keys[normalized] then return true end
+    if denied_exact_keys[normalized] or volatile_exact_keys[normalized] then return true end
     for _, part in ipairs(sensitive_key_parts) do
         if normalized:find(part, 1, true) then return true end
     end

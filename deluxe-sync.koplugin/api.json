@@ -99,8 +99,8 @@
       "path": "/api/v1/settings/backups",
       "method": "PUT",
       "required_params": ["legacy_device_id", "schema_version", "settings"],
-      "optional_params": ["koreader_device_id", "device", "koreader_version", "client_redacted_count"],
-      "payload": ["legacy_device_id", "koreader_device_id", "device", "koreader_version", "schema_version", "client_redacted_count", "settings"],
+      "optional_params": ["koreader_device_id", "device", "koreader_version", "client_redacted_count", "deluxe_profile"],
+      "payload": ["legacy_device_id", "koreader_device_id", "device", "koreader_version", "schema_version", "client_redacted_count", "settings", "deluxe_profile"],
       "expected_status": [200, 400, 401, 404, 405, 409, 422]
     },
     "get_current_settings_restore": {
@@ -111,6 +111,42 @@
     },
     "complete_settings_restore": {
       "path": "/api/v1/settings/restores/:request_id",
+      "method": "POST",
+      "required_params": ["request_id", "legacy_device_id", "status"],
+      "optional_params": ["koreader_device_id", "message"],
+      "payload": ["legacy_device_id", "koreader_device_id", "status", "message"],
+      "expected_status": [200, 400, 401, 404, 405, 409, 422]
+    },
+    "put_deluxe_profile": {
+      "path": "/api/v1/settings/deluxe-profiles",
+      "method": "PUT",
+      "required_params": ["legacy_device_id", "profile"],
+      "optional_params": ["koreader_device_id"],
+      "payload": ["legacy_device_id", "koreader_device_id", "profile"],
+      "expected_status": [200, 400, 401, 404, 405, 409, 422]
+    },
+    "get_deluxe_profile_candidate": {
+      "path": "/api/v1/settings/deluxe-profiles/candidate",
+      "method": "GET",
+      "optional_params": ["legacy_device_id", "koreader_device_id"],
+      "expected_status": [200, 400, 401, 404, 405, 409, 422]
+    },
+    "request_deluxe_profile_restore": {
+      "path": "/api/v1/settings/deluxe-profiles/:profile_id/restore",
+      "method": "POST",
+      "required_params": ["profile_id", "legacy_device_id"],
+      "optional_params": ["koreader_device_id"],
+      "payload": ["legacy_device_id", "koreader_device_id"],
+      "expected_status": [202, 400, 401, 404, 405, 409, 422]
+    },
+    "get_current_deluxe_profile_restore": {
+      "path": "/api/v1/settings/deluxe-profile-restores/current",
+      "method": "GET",
+      "optional_params": ["legacy_device_id", "koreader_device_id"],
+      "expected_status": [200, 400, 401, 404, 405, 409, 422]
+    },
+    "complete_deluxe_profile_restore": {
+      "path": "/api/v1/settings/deluxe-profile-restores/:request_id",
       "method": "POST",
       "required_params": ["request_id", "legacy_device_id", "status"],
       "optional_params": ["koreader_device_id", "message"],
