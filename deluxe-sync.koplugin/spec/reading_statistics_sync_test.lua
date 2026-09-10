@@ -45,7 +45,9 @@ contains(main, 'client:putReadingStatistics(server.username, server.userkey', "n
 contains(main, 'self.statistics_sync_in_flight[sync_key]', "duplicate concurrent statistics uploads must be suppressed")
 contains(main, 'self:syncReadingStatisticsForServer(server)', "normal progress flow must trigger statistics upload")
 contains(main, 'UIManager:scheduleIn(2, function() self:syncReadingStatisticsForAll() end)', "reader-ready historical import trigger missing")
-contains(main, 'UIManager:scheduleIn(1, function() self:syncReadingStatisticsForAll() end)', "network reconnect statistics trigger missing")
+contains(main, 'function ProgressSyncDeluxe:refreshEnhancedCapabilitiesForAll()', "network reconnect capability refresh coordinator missing")
+contains(main, 'self:syncReadingStatisticsForServer(server)', "network refresh must continue statistics synchronization")
+contains(main, 'UIManager:scheduleIn(1, function() self:refreshEnhancedCapabilitiesForAll() end)', "network reconnect statistics/capability trigger missing")
 contains(main, 'reading_statistics = true', "device registration must advertise statistics support")
 contains(main, '_("Reading Statistics")', "server capability UI must expose reading statistics")
 

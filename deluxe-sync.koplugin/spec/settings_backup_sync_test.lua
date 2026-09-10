@@ -58,7 +58,11 @@ contains(main, 'client:completeSettingsRestore(server.username, server.userkey',
 contains(main, 'settings_backups = true', "device registration must advertise settings-backup support")
 contains(main, '_("Settings Backups")', "server capability UI must expose settings backups")
 contains(main, 'UIManager:scheduleIn(2.5, function() self:syncSettingsBackupsForAll() end)', "reader-ready settings backup trigger missing")
-contains(main, 'UIManager:scheduleIn(1.5, function() self:syncSettingsBackupsForAll() end)', "network reconnect settings backup trigger missing")
+contains(main, 'function ProgressSyncDeluxe:refreshEnhancedCapabilities(server, client)', "silent enhanced capability refresh helper missing")
+contains(main, 'function ProgressSyncDeluxe:refreshEnhancedCapabilitiesForAll()', "multi-server enhanced capability refresh missing")
+contains(main, 'self:refreshEnhancedCapabilities(server, client)', "network refresh must update enhanced capabilities before follow-up sync")
+contains(main, 'self:checkSettingsRestoreForServer(server, client)', "network refresh must poll pending settings restore requests")
+contains(main, 'UIManager:scheduleIn(1, function() self:refreshEnhancedCapabilitiesForAll() end)', "network reconnect enhanced capability refresh trigger missing")
 contains(main, 'self:syncSettingsBackupsForAll()', "normal lifecycle must trigger settings backup sync")
 
 local prompt_position = assert(main:find('text = _("Restore")', 1, true))

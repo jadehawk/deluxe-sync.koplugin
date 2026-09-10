@@ -699,6 +699,65 @@ function ProgressSyncDeluxe:refreshSettingsBackupCapabilities(server, client)
     return self:cacheSettingsBackupCapabilities(server, data.capabilities)
 end
 
+function ProgressSyncDeluxe:refreshEnhancedCapabilities(server, client)
+    if not self.store or not server or server.enabled == false then return false, nil end
+    client = client or self:newClient(server)
+    local ok, status, body = client:capabilities()
+    local data = decode(body)
+
+    local function cacheCapabilities(enhanced_capabilities)
+        local logical_supported = type(enhanced_capabilities) == "table"
+            and enhanced_capabilities.logical_books == true
+            and enhanced_capabilities.logical_library == true
+        local rich_position_version = type(enhanced_capabilities) == "table" and tonumber(enhanced_capabilities.rich_position_version) or nil
+        local rich_supported = type(enhanced_capabilities) == "table"
+            and enhanced_capabilities.rich_progress == true
+            and (rich_position_version or 0) >= 1
+        local device_registration_version = type(enhanced_capabilities) == "table" and tonumber(enhanced_capabilities.device_registration_version) or nil
+        local device_supported = type(enhanced_capabilities) == "table"
+            and enhanced_capabilities.device_registration == true
+            and (device_registration_version or 0) >= 1
+        local annotation_version = type(enhanced_capabilities) == "table" and tonumber(enhanced_capabilities.annotations_version) or nil
+        local annotation_supported = type(enhanced_capabilities) == "table"
+            and enhanced_capabilities.annotations == true
+            and (annotation_version or 0) >= 1
+
+        self.store:setCapability(server.id, "logical_books", logical_supported)
+        self.store:setCapability(server.id, "logical_library", logical_supported)
+        self.store:setCapability(server.id, "rich_progress", rich_supported)
+        self.store:setCapability(server.id, "rich_position_version", rich_position_version)
+        self.store:setCapability(server.id, "device_registration", device_supported)
+        self.store:setCapability(server.id, "device_registration_version", device_registration_version)
+        self.store:setCapability(server.id, "annotations", annotation_supported)
+        self.store:setCapability(server.id, "annotations_version", annotation_version)
+        self:cacheReadingStatisticsCapabilities(server, enhanced_capabilities)
+        self:cacheSettingsBackupCapabilities(server, enhanced_capabilities)
+    end
+
+    if ok and (status == 404 or status == 405) then
+        cacheCapabilities(nil)
+        return false, status
+    end
+    if not ok or status ~= 200 or type(data) ~= "table" or type(data.capabilities) ~= "table" then
+        return false, status
+    end
+    cacheCapabilities(data.capabilities)
+    return true, status
+end
+
+function ProgressSyncDeluxe:refreshEnhancedCapabilitiesForAll()
+    if not self.store or not NetworkMgr:isOnline() then return end
+    for index, server in ipairs(self.store:getEnabledServers()) do
+        UIManager:scheduleIn((index - 1) * 0.25, function()
+            local client = self:newClient(server)
+            self:refreshEnhancedCapabilities(server, client)
+            self:checkSettingsRestoreForServer(server, client)
+            self:syncReadingStatisticsForServer(server)
+            self:syncSettingsBackupForServer(server)
+        end)
+    end
+end
+
 function ProgressSyncDeluxe:syncReadingStatisticsForServer(server, callback)
     callback = callback or function() end
     if not self.store or not ReadingStatisticsAdapter or not server or server.enabled == false then
@@ -3222,18 +3281,23 @@ function ProgressSyncDeluxe:showServer(server)
     local matching = server.checksum_method == "filename" and _("Filename") or _("Binary")
     local enabled = server.enabled ~= false
     local buttons = {
-        {{ text = _("Refresh / Test Capabilities"), callback = function() UIManager:close(self.server_dialog); self:testServer(server) end }},
-        {{ text = _("Browse Tracked Books"), callback = function() UIManager:close(self.server_dialog); self:refreshServerLibrary(server) end }},
-        {{ text = _("Account Recovery"), callback = function() UIManager:close(self.server_dialog); self:showRecoveryDialog(server) end }},
-        {{ text = _("Edit Server"), callback = function() UIManager:close(self.server_dialog); self:addServerDialog(server) end }},
-        {{ text = enabled and _("Disable Server") or _("Enable Server"), callback = function()
-            local new_enabled = not enabled
-            self.store:setServerEnabled(server.id, new_enabled)
-            if not new_enabled and self.queue then self.queue:removeServer(server.id) end
-            UIManager:close(self.server_dialog)
-            self:showServer(self.store:getServer(server.id))
-        end }},
-        {{ text = _("Delete Server"), callback = function()
+        {
+            { text = _("Refresh / Test Capabilities"), callback = function() UIManager:close(self.server_dialog); self:testServer(server) end },
+            { text = _("Browse Tracked Books"), callback = function() UIManager:close(self.server_dialog); self:refreshServerLibrary(server) end },
+        },
+        {
+            { text = _("Account Recovery"), callback = function() UIManager:close(self.server_dialog); self:showRecoveryDialog(server) end },
+            { text = _("Edit Server"), callback = function() UIManager:close(self.server_dialog); self:addServerDialog(server) end },
+        },
+        {
+            { text = enabled and _("Disable Server") or _("Enable Server"), callback = function()
+                local new_enabled = not enabled
+                self.store:setServerEnabled(server.id, new_enabled)
+                if not new_enabled and self.queue then self.queue:removeServer(server.id) end
+                UIManager:close(self.server_dialog)
+                self:showServer(self.store:getServer(server.id))
+            end },
+            { text = _("Delete Server"), callback = function()
             local confirm_dialog
             confirm_dialog = ButtonDialog:new{
                 title = _("Delete server?"),
@@ -3253,8 +3317,9 @@ function ProgressSyncDeluxe:showServer(server)
                 },
             }
             suppressDialogContainerHolds(confirm_dialog)
-            UIManager:show(confirm_dialog)
-        end }},
+                UIManager:show(confirm_dialog)
+            end },
+        },
         {{ text = _("Back to Server List"), callback = function() UIManager:close(self.server_dialog); self:showServers() end }},
     }
 
@@ -4104,8 +4169,7 @@ end
 
 function ProgressSyncDeluxe:onNetworkConnected()
     self:scheduleAutomaticUpdateCheck()
-    UIManager:scheduleIn(1, function() self:syncReadingStatisticsForAll() end)
-    UIManager:scheduleIn(1.5, function() self:syncSettingsBackupsForAll() end)
+    UIManager:scheduleIn(1, function() self:refreshEnhancedCapabilitiesForAll() end)
     if not self:canAutoSync() then return end
     UIManager:scheduleIn(0.5, function()
         self:retryQueue(false, function()

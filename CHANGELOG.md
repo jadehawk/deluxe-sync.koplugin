@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.1.9] - 2026-09-09
+
+### Changed
+
+- Refresh enhanced server capabilities on every network reconnect and check for pending same-device restore requests before Stage 8/9 background synchronization.
+- Condense the server-details action area into two buttons per row where possible while keeping Back to Server List full width.
+
+### Tests
+
+- Extended Stage 9 Lua 5.1 integration coverage for reconnect capability refresh and restore polling.
+
 ## [0.1.8] - 2026-09-09
 
 ### Added

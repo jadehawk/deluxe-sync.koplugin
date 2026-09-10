@@ -2,12 +2,13 @@
 
 Deluxe-Sync is a KOReader plugin that extends the built-in KOSync workflow to multiple independent KOReader-compatible servers.
 
-Current plugin version: **0.1.8**
+Current plugin version: **0.1.9**
 
 - Enhanced Techy-Notes servers can register one durable physical device using the existing Deluxe device ID plus KOReader UUID/model/platform/version metadata; unsupported KOSync servers are unchanged.
 - Enhanced servers advertising annotation sync v1 can synchronize KOReader highlights, notes, and bookmarks with stable IDs, revision conflicts, and deletion tombstones; ordinary KOSync servers receive no annotation traffic.
 - Enhanced servers advertising reading-statistics v1 can receive KOReader's existing `statistics.sqlite3` history through a read-only, resumable, deduplicated upload; Deluxe-Sync never writes to KOReader's live statistics database.
 - Enhanced servers advertising settings-backup v1 can receive sanitized, versioned settings snapshots for the current physical device. Credentials and device identity are filtered on the reader before upload, unchanged snapshots are skipped, and a server-requested restore still requires explicit confirmation on that same reader.
+- Deluxe-Sync refreshes enhanced server capabilities on every network reconnect and polls pending restore requests before statistics/settings synchronization; server details use compact two-button action rows.
 
 ## Overview
 
