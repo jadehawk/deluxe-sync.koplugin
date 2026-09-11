@@ -7,6 +7,8 @@ local UrlUtil = require("UrlUtil")
 
 local ServerStore = {}
 
+ServerStore.DATA_SHARING_VERSION = 2
+
 local SETTINGS_DIR = DataStorage:getSettingsDir() .. "/deluxe-sync"
 local SETTINGS_FILE = SETTINGS_DIR .. "/settings.lua"
 
@@ -17,6 +19,8 @@ local defaults = {
     annotation_sync = {},
     reading_statistics_sync = {},
     settings_backup_sync = {},
+    deluxe_profile_sync = {},
+    vocabulary_sync = {},
     settings = {
         auto_sync = false,
         sync_forward = "prompt",
@@ -47,6 +51,8 @@ function ServerStore:new()
     o.data.annotation_sync = o.data.annotation_sync or {}
     o.data.reading_statistics_sync = o.data.reading_statistics_sync or {}
     o.data.settings_backup_sync = o.data.settings_backup_sync or {}
+    o.data.deluxe_profile_sync = o.data.deluxe_profile_sync or {}
+    o.data.vocabulary_sync = o.data.vocabulary_sync or {}
     o.data.settings = o.data.settings or deepCopy(defaults.settings)
     if o.data.settings.auto_sync == nil then o.data.settings.auto_sync = false end
     if o.data.settings.sync_forward == nil then o.data.settings.sync_forward = "prompt" end
@@ -54,6 +60,17 @@ function ServerStore:new()
 
     local servers_changed = false
     for _, server in ipairs(o.data.servers) do
+        local sharing_version = math.max(0, math.floor(tonumber(server.data_sharing_version) or 0))
+        if server.data_sharing_version ~= sharing_version then
+            server.data_sharing_version = sharing_version
+            servers_changed = true
+        end
+        for _, field in ipairs({ "annotations_enabled", "reading_statistics_enabled", "settings_backup_enabled", "deluxe_config_backup_enabled", "vocabulary_enabled", "vocabulary_context_enabled" }) do
+            if server[field] ~= true and server[field] ~= false then
+                server[field] = false
+                servers_changed = true
+            end
+        end
         local checksum_method = server.checksum_method == "filename" and "filename" or "binary"
         if server.checksum_method ~= checksum_method then
             server.checksum_method = checksum_method
@@ -111,6 +128,16 @@ function ServerStore:getEnabledServers()
     return out
 end
 
+function ServerStore:getServersNeedingDataSharingReview()
+    local out = {}
+    for _, server in ipairs(self.data.servers) do
+        if (tonumber(server.data_sharing_version) or 0) < ServerStore.DATA_SHARING_VERSION then
+            out[#out + 1] = server
+        end
+    end
+    return out
+end
+
 function ServerStore:getServer(id)
     for _, server in ipairs(self.data.servers) do
         if server.id == id then return server end
@@ -122,6 +149,13 @@ function ServerStore:upsertServer(server)
     DiagnosticLog.log("server upsert", server.name or "", server.url or "", server.username or "", "email", server.email or "", "enabled", server.enabled ~= false)
     server.enabled = server.enabled ~= false
     server.metadata_enabled = server.metadata_enabled ~= false
+    server.data_sharing_version = math.max(0, math.floor(tonumber(server.data_sharing_version) or 0))
+    server.annotations_enabled = server.annotations_enabled == true
+    server.reading_statistics_enabled = server.reading_statistics_enabled == true
+    server.settings_backup_enabled = server.settings_backup_enabled == true
+    server.deluxe_config_backup_enabled = server.deluxe_config_backup_enabled == true
+    server.vocabulary_enabled = server.vocabulary_enabled == true
+    server.vocabulary_context_enabled = server.vocabulary_enabled and server.vocabulary_context_enabled == true or false
     server.checksum_method = server.checksum_method == "filename" and "filename" or "binary"
     server.capabilities = server.capabilities or {
         metadata_compatible = nil,
@@ -151,6 +185,11 @@ function ServerStore:upsertServer(server)
         deluxe_profile_schema_version = nil,
         deluxe_profile_restore = nil,
         deluxe_profile_restore_direction = nil,
+        vocabulary_builder = nil,
+        vocabulary_builder_version = nil,
+        vocabulary_builder_batch_max = nil,
+        vocabulary_context = nil,
+        vocabulary_direction = nil,
     }
     for i, existing in ipairs(self.data.servers) do
         if existing.id == server.id then
@@ -173,6 +212,8 @@ function ServerStore:removeServer(id)
     self.data.annotation_sync[id] = nil
     self.data.reading_statistics_sync[id] = nil
     self.data.settings_backup_sync[id] = nil
+    self.data.deluxe_profile_sync[id] = nil
+    self.data.vocabulary_sync[id] = nil
     for canonical_document, aliases in pairs(self.data.aliases or {}) do
         local filtered = {}
         for _, alias in ipairs(aliases) do
@@ -314,6 +355,48 @@ function ServerStore:saveSettingsBackupState(server_id, state)
     if not server_id or type(state) ~= "table" then return false end
     self.data.settings_backup_sync = self.data.settings_backup_sync or {}
     self.data.settings_backup_sync[server_id] = state
+    self:flush()
+    return true
+end
+
+function ServerStore:getDeluxeProfileState(server_id)
+    if not server_id then return { checksum = nil, uploaded_at = 0 } end
+    self.data.deluxe_profile_sync = self.data.deluxe_profile_sync or {}
+    local state = self.data.deluxe_profile_sync[server_id]
+    if type(state) ~= "table" then
+        state = { checksum = nil, uploaded_at = 0 }
+        self.data.deluxe_profile_sync[server_id] = state
+    end
+    state.uploaded_at = math.max(0, math.floor(tonumber(state.uploaded_at) or 0))
+    return state
+end
+
+function ServerStore:saveDeluxeProfileState(server_id, state)
+    if not server_id or type(state) ~= "table" then return false end
+    self.data.deluxe_profile_sync = self.data.deluxe_profile_sync or {}
+    self.data.deluxe_profile_sync[server_id] = state
+    self:flush()
+    return true
+end
+
+function ServerStore:getVocabularyState(server_id)
+    if not server_id then return { items = {}, context_included = false, uploaded_at = 0 } end
+    self.data.vocabulary_sync = self.data.vocabulary_sync or {}
+    local state = self.data.vocabulary_sync[server_id]
+    if type(state) ~= "table" then
+        state = { items = {}, context_included = false, uploaded_at = 0 }
+        self.data.vocabulary_sync[server_id] = state
+    end
+    state.items = type(state.items) == "table" and state.items or {}
+    state.context_included = state.context_included == true
+    state.uploaded_at = math.max(0, math.floor(tonumber(state.uploaded_at) or 0))
+    return state
+end
+
+function ServerStore:saveVocabularyState(server_id, state)
+    if not server_id or type(state) ~= "table" then return false end
+    self.data.vocabulary_sync = self.data.vocabulary_sync or {}
+    self.data.vocabulary_sync[server_id] = state
     self:flush()
     return true
 end

@@ -257,6 +257,10 @@ function SyncClient:putReadingStatistics(username, userkey, payload, callback)
     self:_async("put_reading_statistics", username, userkey, payload, callback)
 end
 
+function SyncClient:putVocabulary(username, userkey, payload, callback)
+    self:_async("put_vocabulary", username, userkey, payload, callback)
+end
+
 function SyncClient:putSettingsBackup(username, userkey, payload, callback)
     self:_async("put_settings_backup", username, userkey, payload, callback)
 end

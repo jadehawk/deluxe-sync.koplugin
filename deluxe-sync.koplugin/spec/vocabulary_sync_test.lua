@@ -1,0 +1,77 @@
+local function readFile(path)
+    local file = assert(io.open(path, "rb"))
+    local source = file:read("*a")
+    file:close()
+    return source
+end
+
+local main = readFile("main.lua")
+local store = readFile("ServerStore.lua")
+local client = readFile("SyncClient.lua")
+local api = readFile("api.json")
+local adapter = readFile("VocabularyAdapter.lua")
+
+local function contains(source, text, message)
+    assert(source:find(text, 1, true), message or ("missing Vocabulary Builder integration: " .. text))
+end
+
+contains(api, '"put_vocabulary"', "Vocabulary upload API method missing")
+contains(api, '"path": "/api/v1/vocabulary"', "Vocabulary API path mismatch")
+contains(api, '"required_params": ["legacy_device_id", "include_context", "records"]', "Vocabulary upload must carry device identity, context consent, and normalized records")
+contains(client, 'function SyncClient:putVocabulary(username, userkey, payload, callback)', "Vocabulary SyncClient helper missing")
+contains(client, 'self:_async("put_vocabulary", username, userkey, payload, callback)', "Vocabulary upload must use authenticated async transport")
+
+contains(adapter, 'DataStorage:getSettingsDir() .. "/vocabulary_builder.sqlite3"', "Vocabulary adapter must use KOReader Vocabulary Builder database")
+contains(adapter, 'SQ3.open(db_path, "ro")', "Vocabulary Builder database must be opened read-only")
+contains(adapter, 'if include_context then', "Vocabulary adapter must conditionally read passage context")
+contains(adapter, 'record_hash = recordHash(record, include_context)', "Vocabulary records must have deterministic per-content hashes")
+contains(adapter, 'function VocabularyAdapter.tombstone(id)', "Vocabulary adapter must generate deletion tombstones")
+
+contains(store, 'vocabulary_sync = {}', "per-server Vocabulary delta state storage missing")
+contains(store, 'function ServerStore:getVocabularyState(server_id)', "Vocabulary state getter missing")
+contains(store, 'function ServerStore:saveVocabularyState(server_id, state)', "Vocabulary state persistence missing")
+contains(store, 'self.data.vocabulary_sync[id] = nil', "removing a server must clear Vocabulary delta state")
+contains(store, 'vocabulary_builder = nil', "server capability cache must include Vocabulary Builder")
+contains(store, 'vocabulary_context = nil', "server capability cache must include Vocabulary context support")
+
+contains(main, 'VocabularyAdapter = require("VocabularyAdapter")', "Vocabulary adapter must load with Deluxe-Sync")
+contains(main, 'function ProgressSyncDeluxe:serverSupportsVocabulary(server)', "Vocabulary capability gate missing")
+contains(main, 'function ProgressSyncDeluxe:cacheVocabularyCapabilities(server, enhanced_capabilities)', "Vocabulary capability cache helper missing")
+contains(main, 'function ProgressSyncDeluxe:syncVocabularyForServer(server, callback)', "per-server Vocabulary upload loop missing")
+contains(main, 'server.vocabulary_enabled ~= true', "Vocabulary upload must require explicit per-server consent")
+contains(main, 'local include_context = server.vocabulary_context_enabled == true and capabilities.vocabulary_context == true', "passage context must require both user consent and server capability")
+contains(main, 'VocabularyAdapter.scan(include_context)', "Vocabulary sync must read the privacy-filtered local snapshot")
+contains(main, 'previous[record.id] ~= record.record_hash', "Vocabulary sync must send only new or changed records after initial convergence")
+contains(main, 'if snapshot.hashes[id] == nil then deleted_ids[#deleted_ids + 1] = id end', "Vocabulary sync must detect deletions only after a successful present-database scan")
+contains(main, 'VocabularyAdapter.tombstone(id)', "Vocabulary deletions must converge as tombstones")
+contains(main, 'math.min(math.floor(tonumber(capabilities.vocabulary_builder_batch_max) or VocabularyAdapter.DEFAULT_BATCH_SIZE), 500)', "Vocabulary batch size must respect both server limit and protocol maximum")
+contains(main, 'client:putVocabulary(server.username, server.userkey', "normalized Vocabulary batches must upload through SyncClient")
+contains(main, 'include_context = include_context', "Vocabulary payload must transmit the effective context-consent flag")
+contains(main, 'self.vocabulary_sync_in_flight[sync_key]', "duplicate concurrent Vocabulary uploads must be suppressed")
+contains(main, 'steps[#steps + 1] = function(done) self:syncVocabularyForServer(server, done) end', "optional-data coordinator must include consented Vocabulary work")
+contains(main, '{ label = _("Vocabulary Builder"), value = vocabulary_supported and _("Supported") or _("Not Supported") },', "capability test results must expose Vocabulary Builder support")
+contains(main, 'addStatusRow(_("Vocabulary Builder"), vocabulary)', "server details must expose cached Vocabulary Builder support")
+
+local vocabulary_sync = assert(main:find('function ProgressSyncDeluxe:syncVocabularyForServer(server, callback)', 1, true))
+local consent_gate = assert(main:find('server.vocabulary_enabled ~= true', vocabulary_sync, true))
+local first_read = assert(main:find('VocabularyAdapter.scan(include_context)', vocabulary_sync, true))
+assert(consent_gate < first_read, "disabled Vocabulary Builder must not inspect the local Vocabulary database")
+
+local missing_database = assert(main:find('if snapshot.missing then', first_read, true))
+local state_read = assert(main:find('local stored_state = self.store:getVocabularyState(server.id)', first_read, true))
+assert(missing_database < state_read, "a missing local Vocabulary DB must return before remembered server state is compared or tombstoned")
+
+local state_save = assert(main:find('self.store:saveVocabularyState(server.id, next_state)', state_read, true))
+local upload = assert(main:find('client:putVocabulary(server.username, server.userkey', state_read, true))
+assert(state_save < upload, "the recursive uploader must save its new baseline only from its completion branch before issuing another batch")
+local failed_batch = assert(main:find('if not ok or status ~= 200 then', upload, true))
+local failed_return = assert(main:find('return', failed_batch, true))
+local advance_batch = assert(main:find('offset = last + 1', failed_batch, true))
+local recurse_upload = assert(main:find('uploadNext()', advance_batch, true))
+assert(failed_batch < failed_return and failed_return < advance_batch and advance_batch < recurse_upload, "a failed Vocabulary batch must return before advancing or re-entering the completion branch that saves the new baseline")
+
+local vocabulary_step = assert(main:find('steps[#steps + 1] = function(done) self:syncVocabularyForServer(server, done) end', 1, true))
+local statistics_step = assert(main:find('steps[#steps + 1] = function(done) self:syncReadingStatisticsForServer(server, done) end', vocabulary_step, true))
+assert(vocabulary_step < statistics_step, "large statistics backfill must remain last so Vocabulary convergence is not queued behind it")
+
+print("vocabulary_sync_test.lua: OK")

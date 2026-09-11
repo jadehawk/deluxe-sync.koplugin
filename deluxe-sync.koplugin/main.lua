@@ -70,9 +70,11 @@ local Resolver
 local LocalLibrary
 local AnnotationAdapter
 local ReadingStatisticsAdapter
+local VocabularyAdapter
 local SettingsBackupAdapter
 local SettingsBackupLifecycle
 local DeluxeProfileAdapter
+local EnhancedDataSyncCoordinator
 
 local ProgressSyncDeluxe = WidgetContainer:extend{
     name = "progresssyncdeluxe",
@@ -206,10 +208,13 @@ function ProgressSyncDeluxe:init()
     self.device_heartbeat_sent = {}
     self.annotation_sync_in_flight = {}
     self.statistics_sync_in_flight = {}
+    self.vocabulary_sync_in_flight = {}
     self.settings_backup_in_flight = {}
     self.settings_restore_in_flight = {}
     self.settings_restore_seen = {}
     self.deluxe_profile_in_flight = {}
+    self.deluxe_profile_backup_in_flight = {}
+    self.data_sharing_review_shown = false
     self.deluxe_profile_candidate_seen = {}
     self.deluxe_profile_restore_in_flight = {}
     self.deluxe_profile_restore_seen = {}
@@ -233,12 +238,15 @@ function ProgressSyncDeluxe:init()
         LocalLibrary = require("LocalLibrary")
         AnnotationAdapter = require("AnnotationAdapter")
         ReadingStatisticsAdapter = require("ReadingStatisticsAdapter")
+        VocabularyAdapter = require("VocabularyAdapter")
         SettingsBackupAdapter = require("SettingsBackupAdapter")
         SettingsBackupLifecycle = require("SettingsBackupLifecycle")
         DeluxeProfileAdapter = require("DeluxeProfileAdapter")
+        EnhancedDataSyncCoordinator = require("EnhancedDataSyncCoordinator")
         self.store = ServerStore:new()
         DiagnosticLog.configure(self.store.data.settings.logging_enabled ~= false)
         self.queue = SyncQueue:new()
+        self.enhanced_data_sync = EnhancedDataSyncCoordinator:new(self)
         DiagnosticLog.log("plugin init", "storage ready", "servers", #self.store:listServers(), "queue", self.queue:count())
         if not self.store.data.device_id then
             self.store.data.device_id = md5(table.concat({ tostring(Device.model or "device"), tostring(os.time()), tostring(math.random()) }, ":"))
@@ -484,6 +492,16 @@ function ProgressSyncDeluxe:addToMainMenu(menu_items)
         callback = function() self:pullAll(true) end,
     })
     table.insert(sub_items, {
+        text = _("Sync optional data now"),
+        enabled_func = function()
+            return self:canManualSync() and self.enhanced_data_sync ~= nil
+        end,
+        callback = function()
+            self:nudgeOptionalDataAll(true)
+            UIManager:show(InfoMessage:new{ text = _("Optional data sync queued.") })
+        end,
+    })
+    table.insert(sub_items, {
         text_func = function()
             local queued = self.queue and self.queue:count() or 0
             return T(_("Queued updates (%1)"), queued)
@@ -661,6 +679,32 @@ function ProgressSyncDeluxe:refreshReadingStatisticsCapabilities(server, client)
     return self:cacheReadingStatisticsCapabilities(server, data.capabilities)
 end
 
+function ProgressSyncDeluxe:serverSupportsVocabulary(server)
+    local capabilities = server and server.capabilities or {}
+    local direction = capabilities.vocabulary_direction
+    return VocabularyAdapter ~= nil
+        and capabilities.vocabulary_builder == true
+        and (tonumber(capabilities.vocabulary_builder_version) or 0) >= 1
+        and (direction == nil or direction == "client_to_server")
+end
+
+function ProgressSyncDeluxe:cacheVocabularyCapabilities(server, enhanced_capabilities)
+    local version = type(enhanced_capabilities) == "table" and tonumber(enhanced_capabilities.vocabulary_builder_version) or nil
+    local batch_max = type(enhanced_capabilities) == "table" and tonumber(enhanced_capabilities.vocabulary_builder_batch_max) or nil
+    local direction = type(enhanced_capabilities) == "table" and enhanced_capabilities.vocabulary_direction or nil
+    local context_supported = type(enhanced_capabilities) == "table" and enhanced_capabilities.vocabulary_context == true
+    local supported = type(enhanced_capabilities) == "table"
+        and enhanced_capabilities.vocabulary_builder == true
+        and (version or 0) >= 1
+        and (direction == nil or direction == "client_to_server")
+    self.store:setCapability(server.id, "vocabulary_builder", supported)
+    self.store:setCapability(server.id, "vocabulary_builder_version", version)
+    self.store:setCapability(server.id, "vocabulary_builder_batch_max", batch_max)
+    self.store:setCapability(server.id, "vocabulary_context", context_supported)
+    self.store:setCapability(server.id, "vocabulary_direction", direction)
+    return supported
+end
+
 function ProgressSyncDeluxe:serverSupportsSettingsBackups(server)
     local capabilities = server and server.capabilities or {}
     return capabilities.settings_backups == true
@@ -778,6 +822,7 @@ function ProgressSyncDeluxe:refreshEnhancedCapabilities(server, client)
         self.store:setCapability(server.id, "annotations", annotation_supported)
         self.store:setCapability(server.id, "annotations_version", annotation_version)
         self:cacheReadingStatisticsCapabilities(server, enhanced_capabilities)
+        self:cacheVocabularyCapabilities(server, enhanced_capabilities)
         self:cacheSettingsBackupCapabilities(server, enhanced_capabilities)
         self:cacheDeluxeProfileCapabilities(server, enhanced_capabilities)
     end
@@ -795,22 +840,196 @@ end
 
 function ProgressSyncDeluxe:refreshEnhancedCapabilitiesForAll()
     if not self.store or not NetworkMgr:isOnline() then return end
-    for index, server in ipairs(self.store:getEnabledServers()) do
+    local servers = self.store:getEnabledServers()
+    for index, server in ipairs(servers) do
         UIManager:scheduleIn((index - 1) * 0.25, function()
             local client = self:newClient(server)
             self:refreshEnhancedCapabilities(server, client)
             self:checkSettingsRestoreForServer(server, client)
             self:checkDeluxeProfileMigrationForServer(server, client)
-            self:syncReadingStatisticsForServer(server)
-            self:syncSettingsBackupForServer(server)
         end)
     end
+    UIManager:scheduleIn((#servers * 0.25) + 0.1, function()
+        self:nudgeOptionalDataAll(false)
+    end)
+end
+
+function ProgressSyncDeluxe:getOptionalDataDocuments()
+    local documents = {}
+    if not self.store then return documents end
+    local canonical_document = self:getDocumentDigest()
+    for _, server in ipairs(self.store:getEnabledServers()) do
+        local document = self:getServerDocumentDigest(server) or canonical_document
+        if document and document ~= "" then
+            documents[tostring(server.id)] = document
+        end
+    end
+    return documents
+end
+
+function ProgressSyncDeluxe:nudgeOptionalData(server, document, immediate)
+    if not self.enhanced_data_sync then return end
+    local documents = {}
+    if server and server.id and document and document ~= "" then
+        documents[tostring(server.id)] = document
+    end
+    self.enhanced_data_sync:nudge(documents, immediate == true)
+end
+
+function ProgressSyncDeluxe:nudgeOptionalDataAll(immediate)
+    if not self.enhanced_data_sync then return end
+    self.enhanced_data_sync:nudge(self:getOptionalDataDocuments(), immediate == true)
+end
+
+function ProgressSyncDeluxe:syncOptionalDataForServer(server, document, callback)
+    callback = callback or function() end
+    local steps = {}
+    if server and server.annotations_enabled == true and document and document ~= "" then
+        steps[#steps + 1] = function(done) self:syncAnnotationsForServer(server, document, done) end
+    end
+    if server and server.settings_backup_enabled == true then
+        steps[#steps + 1] = function(done) self:syncSettingsBackupForServer(server, done) end
+    end
+    if server and server.deluxe_config_backup_enabled == true then
+        steps[#steps + 1] = function(done) self:syncDeluxeProfileBackupForServer(server, done) end
+    end
+    if server and server.vocabulary_enabled == true then
+        steps[#steps + 1] = function(done) self:syncVocabularyForServer(server, done) end
+    end
+    if server and server.reading_statistics_enabled == true then
+        steps[#steps + 1] = function(done) self:syncReadingStatisticsForServer(server, done) end
+    end
+
+    local index = 0
+    local function runNext()
+        index = index + 1
+        local step = steps[index]
+        if not step then
+            callback(true)
+            return
+        end
+        step(function() runNext() end)
+    end
+    runNext()
+end
+
+function ProgressSyncDeluxe:syncVocabularyForServer(server, callback)
+    callback = callback or function() end
+    if not self.store or not VocabularyAdapter or not server or server.enabled == false then
+        callback(false, nil, "Vocabulary Builder sync is unavailable")
+        return
+    end
+    if server.vocabulary_enabled ~= true then
+        callback(true, 200, "Vocabulary Builder sharing is disabled")
+        return
+    end
+
+    local sync_key = tostring(server.id or server.url or "server")
+    if self.vocabulary_sync_in_flight[sync_key] then
+        callback(false, nil, "Vocabulary Builder sync is already in progress")
+        return
+    end
+
+    local client = self:newClient(server)
+    local capabilities = server.capabilities or {}
+    if capabilities.vocabulary_builder == nil then
+        self:refreshEnhancedCapabilities(server, client)
+        capabilities = server.capabilities or {}
+    end
+    if not self:serverSupportsVocabulary(server) then
+        callback(false, nil, "Vocabulary Builder is not supported")
+        return
+    end
+
+    local include_context = server.vocabulary_context_enabled == true and capabilities.vocabulary_context == true
+    self.vocabulary_sync_in_flight[sync_key] = true
+
+    local function finish(ok, status, message)
+        self.vocabulary_sync_in_flight[sync_key] = nil
+        if DiagnosticLog then
+            DiagnosticLog.log("vocabulary sync", serverLabel(server), "ok", ok and true or false, "status", status or "nil", "context", include_context, "message", message or "")
+        end
+        callback(ok, status, message)
+    end
+
+    local snapshot, read_error = VocabularyAdapter.scan(include_context)
+    if not snapshot then
+        finish(false, nil, read_error or "Unable to read KOReader Vocabulary Builder")
+        return
+    end
+    if snapshot.missing then
+        finish(true, 200, "KOReader Vocabulary Builder database is not present")
+        return
+    end
+
+    local stored_state = self.store:getVocabularyState(server.id)
+    local previous = stored_state.items or {}
+    local context_changed = stored_state.context_included ~= include_context
+    local pending = {}
+    for _, record in ipairs(snapshot.records or {}) do
+        if context_changed or previous[record.id] ~= record.record_hash then
+            pending[#pending + 1] = record
+        end
+    end
+    local deleted_ids = {}
+    for id in pairs(previous) do
+        if snapshot.hashes[id] == nil then deleted_ids[#deleted_ids + 1] = id end
+    end
+    table.sort(deleted_ids)
+    for _, id in ipairs(deleted_ids) do
+        local tombstone = VocabularyAdapter.tombstone(id)
+        if tombstone then pending[#pending + 1] = tombstone end
+    end
+
+    local next_state = {
+        items = snapshot.hashes,
+        context_included = include_context,
+        uploaded_at = os.time(),
+    }
+    if #pending == 0 then
+        if context_changed then self.store:saveVocabularyState(server.id, next_state) end
+        finish(true, 200, "Vocabulary Builder is up to date")
+        return
+    end
+
+    local registration = self:getDeviceRegistrationPayload()
+    local batch_size = math.max(1, math.min(math.floor(tonumber(capabilities.vocabulary_builder_batch_max) or VocabularyAdapter.DEFAULT_BATCH_SIZE), 500))
+    local offset = 1
+    local function uploadNext()
+        if offset > #pending then
+            self.store:saveVocabularyState(server.id, next_state)
+            finish(true, 200, "Vocabulary Builder sync complete")
+            return
+        end
+        local records = {}
+        local last = math.min(#pending, offset + batch_size - 1)
+        for index = offset, last do records[#records + 1] = pending[index] end
+        client:putVocabulary(server.username, server.userkey, {
+            legacy_device_id = tostring(self.store.data.device_id),
+            koreader_device_id = registration.koreader_device_id,
+            device = tostring(Device.model or "KOReader device"),
+            include_context = include_context,
+            records = records,
+        }, function(ok, status, body)
+            if not ok or status ~= 200 then
+                finish(false, status, serverResponseMessage(body) or body or "Vocabulary Builder upload failed")
+                return
+            end
+            offset = last + 1
+            uploadNext()
+        end)
+    end
+    uploadNext()
 end
 
 function ProgressSyncDeluxe:syncReadingStatisticsForServer(server, callback)
     callback = callback or function() end
     if not self.store or not ReadingStatisticsAdapter or not server or server.enabled == false then
         callback(false, nil, "Reading statistics sync is unavailable")
+        return
+    end
+    if server.reading_statistics_enabled ~= true then
+        callback(true, 200, "Reading statistics sharing is disabled")
         return
     end
     local sync_key = tostring(server.id or server.url or "server")
@@ -902,12 +1121,7 @@ function ProgressSyncDeluxe:syncReadingStatisticsForServer(server, callback)
 end
 
 function ProgressSyncDeluxe:syncReadingStatisticsForAll()
-    if not self.store or not NetworkMgr:isOnline() then return end
-    for index, server in ipairs(self.store:getEnabledServers()) do
-        UIManager:scheduleIn((index - 1) * 0.2, function()
-            self:syncReadingStatisticsForServer(server)
-        end)
-    end
+    self:nudgeOptionalDataAll(false)
 end
 
 function ProgressSyncDeluxe:completeSettingsRestoreRequest(server, client, registration, request_id, status, message, callback)
@@ -1131,6 +1345,7 @@ function ProgressSyncDeluxe:showDeluxeProfileRestorePrompt(server, restore, clie
                             return
                         end
                         acknowledge("applied", "Confirmed and applied on reader", T(_("Deluxe-Sync restored %1 configured server account(s). Restart KOReader to complete the migration."), tostring(result.server_count or server_count)))
+                        UIManager:scheduleIn(0.5, function() self:showDataSharingReview() end)
                         UIManager:scheduleIn(1, function() self:refreshEnhancedCapabilitiesForAll() end)
                     end)
                 end },
@@ -1284,6 +1499,10 @@ end
 
 function ProgressSyncDeluxe:syncSettingsBackupForServer(server, callback)
     callback = callback or function() end
+    if not server or server.settings_backup_enabled ~= true then
+        callback(true, 200, "KOReader settings backup is disabled")
+        return
+    end
     if not self.store or not SettingsBackupAdapter or not SettingsBackupLifecycle or not server or server.enabled == false then
         callback(false, nil, "Settings backup sync is unavailable")
         return
@@ -1296,7 +1515,7 @@ function ProgressSyncDeluxe:syncSettingsBackupForServer(server, callback)
     end
     local client = self:newClient(server)
     local capabilities = server.capabilities or {}
-    if capabilities.settings_backups == nil or capabilities.deluxe_profiles == nil then
+    if capabilities.settings_backups == nil then
         self:refreshSettingsBackupCapabilities(server, client)
     end
     if not self:serverSupportsSettingsBackups(server) then
@@ -1310,27 +1529,16 @@ function ProgressSyncDeluxe:syncSettingsBackupForServer(server, callback)
         return
     end
 
-    local deluxe_capture, deluxe_capture_error
-    if self:serverSupportsDeluxeProfiles(server) and DeluxeProfileAdapter then
-        deluxe_capture, deluxe_capture_error = DeluxeProfileAdapter.capture(self.store)
-        if not deluxe_capture and DiagnosticLog then
-            DiagnosticLog.log("deluxe profile backup", serverLabel(server), "ok", false, "message", deluxe_capture_error or "Unable to capture Deluxe-Sync profile")
-        end
-    end
-
     local registration = self:getDeviceRegistrationPayload()
     local stored_state = self.store:getSettingsBackupState(server.id)
-    local profile_unchanged = not deluxe_capture or stored_state.deluxe_profile_checksum == deluxe_capture.checksum
     local unchanged = stored_state.checksum == captured.checksum
         and tostring(stored_state.koreader_version or "") == tostring(registration.koreader_version or "")
-        and profile_unchanged
     local sync_token = {}
 
     local function finish(ok, status, message, snapshot, uploaded)
         if uploaded and type(snapshot) == "table" then
             self.store:saveSettingsBackupState(server.id, {
                 checksum = captured.checksum,
-                deluxe_profile_checksum = deluxe_capture and deluxe_capture.checksum or stored_state.deluxe_profile_checksum,
                 koreader_version = registration.koreader_version,
                 snapshot_id = snapshot.snapshot_id,
                 uploaded_at = os.time(),
@@ -1367,14 +1575,6 @@ function ProgressSyncDeluxe:syncSettingsBackupForServer(server, callback)
         client_redacted_count = captured.redacted_count,
         settings = captured.settings,
     }
-    if deluxe_capture then
-        payload.deluxe_profile = {
-            servers = deluxe_capture.profile.servers,
-            settings = deluxe_capture.profile.settings,
-            access = deluxe_capture.access,
-        }
-    end
-
     SettingsBackupLifecycle.run({
         unchanged = unchanged,
         stored_state = stored_state,
@@ -1390,7 +1590,6 @@ function ProgressSyncDeluxe:syncSettingsBackupForServer(server, callback)
             if tostring(stored_state.snapshot_id or "") ~= tostring(snapshot_id or "") then return end
             stored_state = {
                 checksum = captured.checksum,
-                deluxe_profile_checksum = deluxe_capture and deluxe_capture.checksum or stored_state.deluxe_profile_checksum,
                 koreader_version = registration.koreader_version,
                 snapshot_id = nil,
                 uploaded_at = 0,
@@ -1411,13 +1610,74 @@ function ProgressSyncDeluxe:syncSettingsBackupForServer(server, callback)
     })
 end
 
-function ProgressSyncDeluxe:syncSettingsBackupsForAll()
-    if not self.store or not NetworkMgr:isOnline() then return end
-    for index, server in ipairs(self.store:getEnabledServers()) do
-        UIManager:scheduleIn((index - 1) * 0.25, function()
-            self:syncSettingsBackupForServer(server)
-        end)
+function ProgressSyncDeluxe:syncDeluxeProfileBackupForServer(server, callback)
+    callback = callback or function() end
+    if not server or server.deluxe_config_backup_enabled ~= true then
+        callback(true, 200, "Deluxe-Sync config backup is disabled")
+        return
     end
+    if not self.store or not DeluxeProfileAdapter or server.enabled == false then
+        callback(false, nil, "Deluxe-Sync config backup is unavailable")
+        return
+    end
+
+    local sync_key = tostring(server.id or server.url or "server")
+    if self.deluxe_profile_backup_in_flight[sync_key] then
+        callback(true, 200, "Deluxe-Sync config backup already in progress")
+        return
+    end
+
+    local client = self:newClient(server)
+    local capabilities = server.capabilities or {}
+    if capabilities.deluxe_profiles == nil then
+        self:refreshSettingsBackupCapabilities(server, client)
+    end
+    if not self:serverSupportsDeluxeProfiles(server) then
+        callback(true, 200, "Deluxe-Sync config backup is not supported")
+        return
+    end
+
+    local captured, capture_error = DeluxeProfileAdapter.capture(self.store)
+    if not captured then
+        callback(false, nil, capture_error or "Unable to capture Deluxe-Sync config")
+        return
+    end
+    local stored_state = self.store:getDeluxeProfileState(server.id)
+    if stored_state.checksum == captured.checksum then
+        callback(true, 200, "Deluxe-Sync config backup is up to date")
+        return
+    end
+
+    local registration = self:getDeviceRegistrationPayload()
+    local payload = {
+        legacy_device_id = tostring(self.store.data.device_id),
+        koreader_device_id = registration.koreader_device_id,
+        profile = {
+            servers = captured.profile.servers,
+            settings = captured.profile.settings,
+            access = captured.access,
+        },
+    }
+    self.deluxe_profile_backup_in_flight[sync_key] = true
+    client:putDeluxeProfile(server.username, server.userkey, payload, function(ok, status, body)
+        self.deluxe_profile_backup_in_flight[sync_key] = nil
+        local success = ok and status == 200
+        if success then
+            self.store:saveDeluxeProfileState(server.id, {
+                checksum = captured.checksum,
+                uploaded_at = os.time(),
+            })
+        end
+        local message = serverResponseMessage(body) or body or (success and "Deluxe-Sync config backup uploaded" or "Deluxe-Sync config backup failed")
+        if DiagnosticLog then
+            DiagnosticLog.log("deluxe profile backup", serverLabel(server), "ok", success, "status", status or "nil", "message", message)
+        end
+        callback(success, status, message)
+    end)
+end
+
+function ProgressSyncDeluxe:syncSettingsBackupsForAll()
+    self:nudgeOptionalDataAll(false)
 end
 
 function ProgressSyncDeluxe:getLocalAnnotations()
@@ -1448,6 +1708,10 @@ end
 
 function ProgressSyncDeluxe:syncAnnotationsForServer(server, document, callback)
     callback = callback or function() end
+    if not server or server.annotations_enabled ~= true then
+        callback(true, 200, "Annotation sharing is disabled")
+        return
+    end
     if not self:serverSupportsAnnotations(server) or not document or document == "" then
         callback(false, nil, "Annotation sync is not supported")
         return
@@ -1763,9 +2027,8 @@ function ProgressSyncDeluxe:pushAll(interactive)
                         self.store:setCapability(server.id, "metadata_compatible", true)
                     end
                     self:heartbeatDevice(server, nil, false)
-                    self:syncAnnotationsForServer(server, document)
-                    self:syncReadingStatisticsForServer(server)
-                    self:syncSettingsBackupForServer(server)
+                    self:nudgeOptionalData(server, payload.document, false)
+
                     done()
                 elseif is_metadata_probe and (status == 400 or status == 404 or status == 422) then
                     if DiagnosticLog then DiagnosticLog.log("metadata fallback", serverLabel(server), "status", status, "body", body) end
@@ -1946,8 +2209,7 @@ function ProgressSyncDeluxe:retryQueue(interactive, complete_callback, retry_mod
                 if ok and (status == 200 or status == 202) then
                     self.queue:remove(item.server_id, item.document)
                     self:heartbeatDevice(server, nil, false)
-                    self:syncReadingStatisticsForServer(server)
-                    self:syncSettingsBackupForServer(server)
+                    self:nudgeOptionalData(server, payload.document, false)
                 elseif isBookNotFoundResponse(status, body) then
                     self.queue:remove(item.server_id, item.document)
                     if DiagnosticLog then DiagnosticLog.log("queue drop not tracked", serverLabel(server), "document", item.document, "status", status, "body", body) end
@@ -2035,13 +2297,6 @@ function ProgressSyncDeluxe:pullAll(interactive)
         end
     end
 
-    for _, server in ipairs(servers) do
-        if self:serverSupportsAnnotations(server) then
-            local annotation_document = self:getServerDocumentDigest(server) or canonical_document
-            self:syncAnnotationsForServer(server, annotation_document)
-        end
-    end
-
     local pending = #requests
     if pending == 0 then
         self.auto_pull_in_flight = false
@@ -2089,6 +2344,7 @@ function ProgressSyncDeluxe:pullAll(interactive)
         self:newClient(server):getProgress(server.username, server.userkey, request.document, function(ok, status, body)
             local data = decode(body) or {}
             local has_remote_record = status == 200 and (data.progress ~= nil or data.percentage ~= nil or data.timestamp ~= nil)
+            if ok and status == 200 then self:nudgeOptionalData(server, request.document, false) end
             if DiagnosticLog then
                 DiagnosticLog.log(
                     "pull result",
@@ -3176,10 +3432,161 @@ function ProgressSyncDeluxe:showServers(state)
     end
 end
 
+function ProgressSyncDeluxe:showDataSharingDialog(server, on_save, on_cancel)
+    server = server or {}
+    local values = {
+        metadata_enabled = server.metadata_enabled ~= false,
+        annotations_enabled = server.annotations_enabled == true,
+        reading_statistics_enabled = server.reading_statistics_enabled == true,
+        settings_backup_enabled = server.settings_backup_enabled == true,
+        deluxe_config_backup_enabled = server.deluxe_config_backup_enabled == true,
+        vocabulary_enabled = server.vocabulary_enabled == true,
+        vocabulary_context_enabled = server.vocabulary_enabled == true and server.vocabulary_context_enabled == true,
+    }
+    local dialog
+    local labels = {
+        { id = "metadata_sharing", field = "metadata_enabled", label = _("Book Metadata") },
+        { id = "annotation_sharing", field = "annotations_enabled", label = _("Annotations / Highlights / Notes") },
+        { id = "statistics_sharing", field = "reading_statistics_enabled", label = _("Reading Statistics") },
+        { id = "settings_sharing", field = "settings_backup_enabled", label = _("KOReader Settings Backup") },
+        { id = "config_sharing", field = "deluxe_config_backup_enabled", label = _("Deluxe-Sync Config Backup") },
+        { id = "vocabulary_sharing", field = "vocabulary_enabled", label = _("Vocabulary Builder") },
+        { id = "vocabulary_context_sharing", field = "vocabulary_context_enabled", label = _("Vocabulary Reading Context") },
+    }
+    local function buttonText(item)
+        return T(_("%1: %2"), item.label, values[item.field] and _("On") or _("Off"))
+    end
+    local function toggle(item)
+        if item.field == "vocabulary_context_enabled" and not values.vocabulary_enabled then
+            UIManager:show(InfoMessage:new{ text = _("Enable Vocabulary Builder before sharing reading context.") })
+            return
+        end
+        values[item.field] = not values[item.field]
+        if item.field == "vocabulary_enabled" and not values.vocabulary_enabled then
+            values.vocabulary_context_enabled = false
+            local context_button = dialog:getButtonById("vocabulary_context_sharing")
+            if context_button then
+                local context_item = labels[#labels]
+                context_button:setText(buttonText(context_item), context_button.width)
+            end
+        end
+        local button = dialog:getButtonById(item.id)
+        if button then button:setText(buttonText(item), button.width) end
+        UIManager:setDirty(dialog, "ui")
+        if item.field == "deluxe_config_backup_enabled" and values[item.field] then
+            UIManager:show(InfoMessage:new{
+                text = _("Deluxe-Sync Config Backup includes your configured server URLs, usernames, and saved authentication keys. Enable it only for a server you trust to hold your complete Deluxe-Sync setup."),
+            })
+        elseif item.field == "vocabulary_context_enabled" and values[item.field] then
+            UIManager:show(InfoMessage:new{
+                text = _("Vocabulary Reading Context can include surrounding book passages and highlighted text. Enable it only if you want those excerpts stored on this server."),
+            })
+        end
+    end
+
+    local rows = {
+        {{
+            text = _("Reading Progress: On (required)"),
+            callback = function()
+                UIManager:show(InfoMessage:new{ text = _("Reading progress is the core Deluxe-Sync service and is always shared with an enabled server.") })
+            end,
+        }},
+    }
+    for _, item in ipairs(labels) do
+        local current = item
+        rows[#rows + 1] = {{
+            id = current.id,
+            text = buttonText(current),
+            callback = function() toggle(current) end,
+        }}
+    end
+    rows[#rows + 1] = {
+        {
+            text = _("Cancel"),
+            callback = function()
+                UIManager:close(dialog)
+                if on_cancel then on_cancel() end
+            end,
+        },
+        {
+            text = _("Save"),
+            is_enter_default = true,
+            callback = function()
+                for field, value in pairs(values) do server[field] = value end
+                server.data_sharing_version = ServerStore.DATA_SHARING_VERSION
+                UIManager:close(dialog)
+                if on_save then on_save(server) end
+            end,
+        },
+    }
+
+    dialog = ButtonDialog:new{
+        title = T(_("Data shared with %1"), serverLabel(server)),
+        title_align = "left",
+        buttons = rows,
+    }
+    suppressDialogContainerHolds(dialog)
+    UIManager:show(dialog)
+end
+
+function ProgressSyncDeluxe:showDataSharingReview()
+    if self.data_sharing_review_shown or not self.store then return end
+    local pending = self.store:getServersNeedingDataSharingReview()
+    if #pending == 0 then return end
+    self.data_sharing_review_shown = true
+    local server = pending[1]
+    local dialog
+    dialog = ButtonDialog:new{
+        title = T(_("Review data sharing (%1 remaining)"), #pending),
+        title_align = "left",
+        buttons = {
+            {{
+                text = T(_("Review %1"), serverLabel(server)),
+                callback = function()
+                    UIManager:close(dialog)
+                    self:showDataSharingDialog(server, function(updated)
+                        self.store:upsertServer(updated)
+                        self.data_sharing_review_shown = false
+                        local remaining = self.store:getServersNeedingDataSharingReview()
+                        local message
+                        if #remaining > 0 then
+                            message = T(_("Saved for %1. Servers remaining to review: %2."), serverLabel(updated), #remaining)
+                        else
+                            message = T(_("Saved for %1. Data-sharing review is complete."), serverLabel(updated))
+                        end
+                        UIManager:show(InfoMessage:new{ text = message, timeout = 1.5 })
+                        if #remaining > 0 then
+                            UIManager:scheduleIn(1.6, function() self:showDataSharingReview() end)
+                        end
+                    end, function()
+                        self.data_sharing_review_shown = false
+                    end)
+                end,
+            }},
+            {{
+                text = _("Later"),
+                callback = function()
+                    UIManager:close(dialog)
+                    self.data_sharing_review_shown = false
+                end,
+            }},
+        },
+    }
+    suppressDialogContainerHolds(dialog)
+    UIManager:show(dialog)
+end
+
 function ProgressSyncDeluxe:addServerDialog(existing)
     existing = existing or {}
     local dialog
     local metadata_enabled = existing.metadata_enabled ~= false
+    local data_sharing_version = tonumber(existing.data_sharing_version) or (existing.id and 0 or ServerStore.DATA_SHARING_VERSION)
+    local annotations_enabled = existing.annotations_enabled == true
+    local reading_statistics_enabled = existing.reading_statistics_enabled == true
+    local settings_backup_enabled = existing.settings_backup_enabled == true
+    local deluxe_config_backup_enabled = existing.deluxe_config_backup_enabled == true
+    local vocabulary_enabled = existing.vocabulary_enabled == true
+    local vocabulary_context_enabled = vocabulary_enabled and existing.vocabulary_context_enabled == true
     local checksum_method = existing.checksum_method == "filename" and "filename" or "binary"
 
     local function collectServer(require_password)
@@ -3222,6 +3629,13 @@ function ProgressSyncDeluxe:addServerDialog(existing)
             userkey = key,
             enabled = existing.enabled ~= false,
             metadata_enabled = metadata_enabled,
+            data_sharing_version = data_sharing_version,
+            annotations_enabled = annotations_enabled,
+            reading_statistics_enabled = reading_statistics_enabled,
+            settings_backup_enabled = settings_backup_enabled,
+            deluxe_config_backup_enabled = deluxe_config_backup_enabled,
+            vocabulary_enabled = vocabulary_enabled,
+            vocabulary_context_enabled = vocabulary_context_enabled,
             checksum_method = checksum_method,
             capabilities = capabilities,
         }
@@ -3238,6 +3652,13 @@ function ProgressSyncDeluxe:addServerDialog(existing)
             userkey = existing.userkey,
             enabled = existing.enabled ~= false,
             metadata_enabled = metadata_enabled,
+            data_sharing_version = data_sharing_version,
+            annotations_enabled = annotations_enabled,
+            reading_statistics_enabled = reading_statistics_enabled,
+            settings_backup_enabled = settings_backup_enabled,
+            deluxe_config_backup_enabled = deluxe_config_backup_enabled,
+            vocabulary_enabled = vocabulary_enabled,
+            vocabulary_context_enabled = vocabulary_context_enabled,
             checksum_method = checksum_method,
             capabilities = existing.capabilities,
         }
@@ -3279,8 +3700,8 @@ function ProgressSyncDeluxe:addServerDialog(existing)
         end,
     })
 
-    local function metadataToggleText()
-        return T(_("Metadata: %1"), metadata_enabled and _("On") or _("Off"))
+    local function dataSharingButtonText()
+        return _("Data sharing")
     end
     local function matchingToggleText()
         return T(_("Match: %1"), checksum_method == "filename" and _("Filename") or _("Binary"))
@@ -3307,12 +3728,29 @@ function ProgressSyncDeluxe:addServerDialog(existing)
                     end,
                 },
                 {
-                    id = "metadata_toggle",
-                    text = metadataToggleText(),
+                    id = "data_sharing_toggle",
+                    text = dataSharingButtonText(),
                     callback = function()
-                        metadata_enabled = not metadata_enabled
-                        local button = dialog.button_table:getButtonById("metadata_toggle")
-                        if button then button:setText(metadataToggleText(), button.width) end
+                        self:showDataSharingDialog({
+                            metadata_enabled = metadata_enabled,
+                            annotations_enabled = annotations_enabled,
+                            reading_statistics_enabled = reading_statistics_enabled,
+                            settings_backup_enabled = settings_backup_enabled,
+                            deluxe_config_backup_enabled = deluxe_config_backup_enabled,
+                            vocabulary_enabled = vocabulary_enabled,
+                            vocabulary_context_enabled = vocabulary_context_enabled,
+                        }, function(updated)
+                            metadata_enabled = updated.metadata_enabled ~= false
+                            annotations_enabled = updated.annotations_enabled == true
+                            reading_statistics_enabled = updated.reading_statistics_enabled == true
+                            settings_backup_enabled = updated.settings_backup_enabled == true
+                            deluxe_config_backup_enabled = updated.deluxe_config_backup_enabled == true
+                            vocabulary_enabled = updated.vocabulary_enabled == true
+                            vocabulary_context_enabled = vocabulary_enabled and updated.vocabulary_context_enabled == true
+                            data_sharing_version = updated.data_sharing_version or data_sharing_version
+                        end)
+
+
                         UIManager:setDirty(dialog, "ui")
                     end,
                 },
@@ -3321,7 +3759,7 @@ function ProgressSyncDeluxe:addServerDialog(existing)
                     text = matchingToggleText(),
                     callback = function()
                         checksum_method = checksum_method == "filename" and "binary" or "filename"
-                        local button = dialog.button_table:getButtonById("matching_toggle")
+                        local button = dialog:getButtonById("matching_toggle")
                         if button then button:setText(matchingToggleText(), button.width) end
                         UIManager:setDirty(dialog, "ui")
                     end,
@@ -3643,7 +4081,7 @@ function ProgressSyncDeluxe:showStatusCard(title, rows, actions)
     return dialog
 end
 
-function ProgressSyncDeluxe:showServerTestResult(server, listing_supported, book_count, recovery_supported, logical_supported, rich_supported, device_supported, device_registered, annotation_supported, reading_statistics_supported, settings_backup_supported)
+function ProgressSyncDeluxe:showServerTestResult(server, listing_supported, book_count, recovery_supported, logical_supported, rich_supported, device_supported, device_registered, annotation_supported, reading_statistics_supported, settings_backup_supported, vocabulary_supported)
     local listing_value = listing_supported
         and T(_("Supported (%1 Books)"), book_count or 0)
         or _("Not Supported")
@@ -3660,6 +4098,7 @@ function ProgressSyncDeluxe:showServerTestResult(server, listing_supported, book
         { label = _("Annotations"), value = annotation_supported and _("Supported") or _("Not Supported") },
         { label = _("Reading Statistics"), value = reading_statistics_supported and _("Supported") or _("Not Supported") },
         { label = _("Settings Backups"), value = settings_backup_supported and _("Supported") or _("Not Supported") },
+        { label = _("Vocabulary Builder"), value = vocabulary_supported and _("Supported") or _("Not Supported") },
     })
 end
 
@@ -3694,6 +4133,7 @@ function ProgressSyncDeluxe:testServer(server)
         and enhanced_capabilities.annotations == true
         and (annotation_version or 0) >= 1
     local reading_statistics_supported = self:cacheReadingStatisticsCapabilities(server, enhanced_capabilities)
+    local vocabulary_supported = self:cacheVocabularyCapabilities(server, enhanced_capabilities)
     local settings_backup_supported = self:cacheSettingsBackupCapabilities(server, enhanced_capabilities)
     self.store:setCapability(server.id, "logical_books", logical_supported)
     self.store:setCapability(server.id, "logical_library", logical_supported)
@@ -3714,13 +4154,11 @@ function ProgressSyncDeluxe:testServer(server)
             if list_ok and list_status == 200 and data and type(data.documents) == "table" then
                 self.store:setCapability(server.id, "document_listing", true)
                 self.store:setKnownDocuments(server.id, data.documents)
-                self:showServerTestResult(server, true, #data.documents, recovery_supported, logical_supported, rich_supported, device_supported, device_registered, annotation_supported, reading_statistics_supported, settings_backup_supported)
+                self:showServerTestResult(server, true, #data.documents, recovery_supported, logical_supported, rich_supported, device_supported, device_registered, annotation_supported, reading_statistics_supported, settings_backup_supported, vocabulary_supported)
             else
                 self.store:setCapability(server.id, "document_listing", false)
-                self:showServerTestResult(server, false, 0, recovery_supported, logical_supported, rich_supported, device_supported, device_registered, annotation_supported, reading_statistics_supported, settings_backup_supported)
+                self:showServerTestResult(server, false, 0, recovery_supported, logical_supported, rich_supported, device_supported, device_registered, annotation_supported, reading_statistics_supported, settings_backup_supported, vocabulary_supported)
             end
-            if reading_statistics_supported then self:syncReadingStatisticsForServer(server) end
-            if settings_backup_supported then self:syncSettingsBackupForServer(server) end
         end)
     end
 
@@ -3741,6 +4179,7 @@ function ProgressSyncDeluxe:showServer(server)
     local annotations = caps.annotations == true and _("Supported") or (caps.annotations == false and _("Not supported") or _("Unknown"))
     local reading_statistics = caps.reading_statistics == true and _("Supported") or (caps.reading_statistics == false and _("Not supported") or _("Unknown"))
     local settings_backups = caps.settings_backups == true and _("Supported") or (caps.settings_backups == false and _("Not supported") or _("Unknown"))
+    local vocabulary = caps.vocabulary_builder == true and _("Supported") or (caps.vocabulary_builder == false and _("Not supported") or _("Unknown"))
     local device_identity = caps.device_registration == true
         and (caps.device_registered == true and _("Registered") or _("Supported"))
         or (caps.device_registration == false and _("Not supported") or _("Unknown"))
@@ -3821,6 +4260,7 @@ function ProgressSyncDeluxe:showServer(server)
     addStatusRow(_("Annotations"), annotations)
     addStatusRow(_("Reading Statistics"), reading_statistics)
     addStatusRow(_("Settings Backups"), settings_backups)
+    addStatusRow(_("Vocabulary Builder"), vocabulary)
     addStatusRow(_("Matching Method"), matching)
     addStatusRow(_("Account Recovery"), recovery)
 
@@ -4600,14 +5040,14 @@ function ProgressSyncDeluxe:scheduleAutomaticUpdateCheck()
 end
 
 function ProgressSyncDeluxe:onReaderReady()
+    UIManager:scheduleIn(0.5, function() self:showDataSharingReview() end)
     self:onDispatcherRegisterActions()
     self.last_page_turn_timestamp = 0
     self.last_auto_sync_page = self.ui.getCurrentPage and self.ui:getCurrentPage() or nil
     self:scheduleAutomaticUpdateCheck()
     if NetworkMgr:isOnline() then
         UIManager:scheduleIn(1, function() self:scheduleQueueRetry() end)
-        UIManager:scheduleIn(2, function() self:syncReadingStatisticsForAll() end)
-        UIManager:scheduleIn(2.5, function() self:syncSettingsBackupsForAll() end)
+        UIManager:scheduleIn(2, function() self:nudgeOptionalDataAll(false) end)
     end
     if self:canAutoSync() then
         UIManager:nextTick(function() self:autoSyncPull() end)
@@ -4624,8 +5064,7 @@ end
 function ProgressSyncDeluxe:onResume()
     if NetworkMgr:isOnline() then
         UIManager:scheduleIn(0.5, function() self:scheduleQueueRetry() end)
-        UIManager:scheduleIn(1.5, function() self:syncReadingStatisticsForAll() end)
-        UIManager:scheduleIn(2, function() self:syncSettingsBackupsForAll() end)
+        UIManager:scheduleIn(1.5, function() self:nudgeOptionalDataAll(false) end)
     end
     if not self:canAutoSync() then return end
     UIManager:scheduleIn(1, function() self:autoSyncPull() end)
@@ -4649,8 +5088,7 @@ function ProgressSyncDeluxe:onCloseDocument()
     if self.preview then self.preview = nil; return end
     self:autoSyncPush()
     if NetworkMgr:isOnline() then
-        self:syncReadingStatisticsForAll()
-        self:syncSettingsBackupsForAll()
+        self:nudgeOptionalDataAll(false)
     end
 end
 

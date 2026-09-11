@@ -221,6 +221,13 @@ function DeluxeProfileAdapter.apply(store, profile)
         server[access_field] = access_by_index[index]
         server.enabled = portable.enabled ~= false
         server.metadata_enabled = portable.metadata_enabled ~= false
+        server.data_sharing_version = existing and math.max(0, math.floor(tonumber(existing.data_sharing_version) or 0)) or 0
+        server.annotations_enabled = existing and existing.annotations_enabled == true or false
+        server.reading_statistics_enabled = existing and existing.reading_statistics_enabled == true or false
+        server.settings_backup_enabled = existing and existing.settings_backup_enabled == true or false
+        server.deluxe_config_backup_enabled = existing and existing.deluxe_config_backup_enabled == true or false
+        server.vocabulary_enabled = existing and existing.vocabulary_enabled == true or false
+        server.vocabulary_context_enabled = server.vocabulary_enabled and existing and existing.vocabulary_context_enabled == true or false
         server.checksum_method = portable.checksum_method == "filename" and "filename" or "binary"
         server.credentials_required = nil
         server.restore_enabled = nil

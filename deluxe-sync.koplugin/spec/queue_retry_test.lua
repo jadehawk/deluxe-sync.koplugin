@@ -28,7 +28,7 @@ contains(main, "item.retry_blocked = false", "manual retry must be able to retry
 contains(main, "local retry_delay = QUEUE_RETRY_DELAYS[failure_count]", "retry failures must advance through backoff")
 contains(main, "auto_retry_exhausted = exhausted", "retry budget exhaustion must persist")
 contains(main, "retry_blocked = true", "authentication failures must stop automatic retry")
-contains(main, "self:syncSettingsBackupForServer(server)", "successful retries must run settings snapshot convergence")
+contains(main, "self:nudgeOptionalData(server, payload.document, false)", "successful retries must nudge optional-data convergence")
 contains(main, 'end, "network")', "network reconnect must force a queue retry cycle")
 contains(main, "if self:canAutoSync() then self:autoSyncPull() end", "network queue retry must not require Auto-Sync, while follow-up pull still does")
 contains(main, "UIManager:scheduleIn(1, function() self:scheduleQueueRetry() end)", "reader-ready must resume persisted queue scheduling")

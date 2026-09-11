@@ -23,7 +23,7 @@ contains(store, 'server.checksum_method == "filename" and "filename" or "binary"
 contains(main, 'local checksum_method = existing.checksum_method == "filename" and "filename" or "binary"', "edit dialog must restore per-server matching method")
 contains(main, 'id = "matching_toggle"', "server dialog must expose a compact matching-method toggle")
 contains(main, 'T(_("Match: %1"), checksum_method == "filename" and _("Filename") or _("Binary"))', "matching method must explicitly show Binary or Filename")
-contains(main, 'id = "metadata_toggle"', "metadata toggle must share the compact server option row")
+contains(main, 'id = "data_sharing_toggle"', "data-sharing controls must share the compact server option row")
 excludes(main, 'Match documents by filename', "legacy filename-only checkbox should not remain in the server dialog")
 
 -- Filename mode mirrors KOReader: MD5 of the basename, not the raw filename string.
