@@ -261,6 +261,12 @@ function SyncClient:putSettingsBackup(username, userkey, payload, callback)
     self:_async("put_settings_backup", username, userkey, payload, callback)
 end
 
+function SyncClient:getSettingsBackup(username, userkey, snapshot_id, callback)
+    self:_async("get_settings_backup", username, userkey, {
+        snapshot_id = snapshot_id,
+    }, callback)
+end
+
 function SyncClient:getCurrentSettingsRestore(username, userkey, legacy_device_id, koreader_device_id, callback)
     self:_async("get_current_settings_restore", username, userkey, {
         legacy_device_id = legacy_device_id,

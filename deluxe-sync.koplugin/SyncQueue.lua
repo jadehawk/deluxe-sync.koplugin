@@ -30,20 +30,31 @@ function SyncQueue:push(item)
     end
     item.queued_at = item.queued_at or os.time()
     item.reason = item.reason or "Pending retry"
+    item.failure_count = tonumber(item.failure_count) or 0
+    item.last_attempt_at = tonumber(item.last_attempt_at)
+    item.next_retry_at = tonumber(item.next_retry_at)
+    item.auto_retry_exhausted = item.auto_retry_exhausted == true
+    item.retry_blocked = item.retry_blocked == true
     table.insert(filtered, item)
     self.items = filtered
     self:save()
-    DiagnosticLog.log("queue push", "server", item.server_id, "document", item.document, "reason", item.reason, "count", #self.items)
+    DiagnosticLog.log("queue push", "server", item.server_id, "document", item.document, "reason", item.reason, "failures", item.failure_count, "count", #self.items)
 end
 
-function SyncQueue:updateFailure(server_id, document, status, reason)
+function SyncQueue:updateFailure(server_id, document, status, reason, retry_state)
     for _, item in ipairs(self.items) do
         if item.server_id == server_id and item.document == document then
             item.last_status = status
             item.reason = reason or "Pending retry"
             item.last_attempt_at = os.time()
+            if type(retry_state) == "table" then
+                item.failure_count = tonumber(retry_state.failure_count) or (tonumber(item.failure_count) or 0)
+                item.next_retry_at = tonumber(retry_state.next_retry_at)
+                item.auto_retry_exhausted = retry_state.auto_retry_exhausted == true
+                item.retry_blocked = retry_state.retry_blocked == true
+            end
             self:save()
-            DiagnosticLog.log("queue update failure", "server", server_id, "document", document, "status", status or "nil", "reason", item.reason)
+            DiagnosticLog.log("queue update failure", "server", server_id, "document", document, "status", status or "nil", "reason", item.reason, "failures", tonumber(item.failure_count) or 0, "exhausted", item.auto_retry_exhausted and true or false, "blocked", item.retry_blocked and true or false)
             return true
         end
     end

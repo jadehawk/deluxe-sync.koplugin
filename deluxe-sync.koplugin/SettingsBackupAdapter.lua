@@ -1,10 +1,11 @@
 local json = require("json")
 local sha = require("ffi/sha2")
+local CoreReaderSettings = require("CoreReaderSettings")
 
 local SettingsBackupAdapter = {}
 
 SettingsBackupAdapter.PROTOCOL_VERSION = 1
-SettingsBackupAdapter.SCHEMA_VERSION = 1
+SettingsBackupAdapter.SCHEMA_VERSION = 2
 SettingsBackupAdapter.MAX_DEPTH = 16
 
 local sensitive_key_parts = {
@@ -31,11 +32,9 @@ local denied_exact_keys = {
     proxy_password = true,
 }
 
--- KOReader persists a handful of current-session/runtime values in
--- settings.reader.lua. They are not durable preferences and change during
--- ordinary reading, navigation, suspend/resume, or automatic frontlight use.
--- Excluding them prevents normal reader activity from creating backup churn
--- and avoids restoring stale navigation/device state from an older snapshot.
+-- KOReader persists some current-session/runtime values in settings.reader.lua.
+-- These are core keys, but they are not durable preferences and should neither
+-- create backup churn nor be restored from an older snapshot.
 local volatile_exact_keys = {
     lastfile = true,
     lastdir = true,
@@ -51,6 +50,12 @@ local volatile_exact_keys = {
     is_frontlight_on = true,
     night_mode = true,
     closed_rotation_mode = true,
+    wifi_was_on = true,
+}
+
+local volatile_exact_paths = {
+    ["clipboard"] = true,
+    ["sdl_window"] = true,
 }
 
 local function shouldDenyKey(key)
@@ -60,6 +65,10 @@ local function shouldDenyKey(key)
         if normalized:find(part, 1, true) then return true end
     end
     return false
+end
+
+local function shouldDenyPath(path)
+    return volatile_exact_paths[tostring(path or ""):lower()] == true
 end
 
 local function isFiniteNumber(value)
@@ -121,7 +130,8 @@ local function sanitizeValue(value, path, depth, seen, redacted)
                 redacted[#redacted + 1] = path ~= "" and (path .. ".<non-string-key>") or "<non-string-key>"
             else
                 local child_path = path ~= "" and (path .. "." .. key) or key
-                if shouldDenyKey(key) then
+                local unknown_root_key = path == "" and not CoreReaderSettings.allows(key)
+                if unknown_root_key or shouldDenyKey(key) or shouldDenyPath(child_path) then
                     redacted[#redacted + 1] = child_path
                 else
                     local sanitized = sanitizeValue(child, child_path, depth + 1, seen, redacted)

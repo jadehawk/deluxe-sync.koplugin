@@ -1,5 +1,49 @@
 # Changelog
 
+## [0.1.15] - 2026-09-10
+
+### Fixed
+
+- Settings snapshot convergence now treats a server 404 as authoritative, clears the deleted snapshot ID locally, and recreates the snapshot through a fresh client request so an unchanged backup deleted on the server can reliably return on the next successful sync lifecycle.
+- Settings-backup in-flight state is now tokenized and protected by a watchdog so an interrupted presence-check or replacement-upload request cannot permanently suppress later backup convergence.
+
+### Tests
+
+- Added executable Lua 5.1 lifecycle coverage for deleted snapshot A → 404 → recreated snapshot B → subsequent no-op revalidation, plus transient presence-check failure and failed replacement-upload recovery on a later lifecycle.
+
+## [0.1.14] - 2026-09-10
+
+### Fixed
+
+- Successful progress pushes now run the settings-backup lifecycle, so an unchanged KOReader settings snapshot that was deleted from the server is detected and recreated without requiring a local settings change.
+- Failed transient progress pushes now retry in the background on a bounded persisted schedule: 30 seconds, 2 minutes, 5 minutes, 15 minutes, 30 minutes, then 60 minutes. After the sixth background retry, automatic attempts pause without deleting the queued progress.
+- Queue retry no longer depends on Auto-Sync being enabled when the network reconnects. Authentication failures remain blocked from automatic retry; manual retry, a newer push, or a later reconnect can resume eligible queued progress.
+
+### Tests
+
+- Added Lua 5.1 regression coverage for push-triggered settings snapshot revalidation, persisted retry state, bounded backoff/exhaustion, reconnect behavior, and manual retry reset.
+
+## [0.1.13] - 2026-09-10
+
+### Fixed
+
+- Unchanged settings backups now revalidate the remembered snapshot against the server before skipping upload. If that server snapshot was deleted, Deluxe-Sync immediately recreates the same core-settings baseline through the idempotent backup endpoint instead of trusting stale local state.
+
+### Tests
+
+- Extended Lua 5.1 settings-backup integration coverage for server-authoritative snapshot presence checks and missing-snapshot upload fallback.
+
+## [0.1.12] - 2026-09-10
+
+### Fixed
+
+- Prevented arbitrary third-party plugin activity from creating duplicate KOReader settings snapshots when core KOReader preferences have not changed.
+- Settings snapshot schema 2 is core-only and fail-closed: unknown plugin namespaces, scalar values, caches, timestamps, and preferences are excluded automatically, while recognized KOReader core settings remain restorable. Deluxe-Sync setup and preferences continue through the separate protected Deluxe profile.
+
+### Tests
+
+- Added Lua 5.1 coverage proving a fictional unknown plugin can change arbitrary runtime/preferences without changing the core settings checksum, while a real KOReader core preference change still produces a new snapshot.
+
 ## [0.1.11] - 2026-09-10
 
 ### Added

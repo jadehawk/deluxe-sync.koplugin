@@ -58,6 +58,7 @@ local plugin_root = source_path:match("^(.*)[/\\]main%.lua$") or "."
 local PluginMeta = dofile(plugin_root .. "/_meta.lua")
 local PLUGIN_VERSION = assert(PluginMeta.version, "Missing plugin version in _meta.lua")
 local QUEUE_DISABLE_THRESHOLD = 20
+local QUEUE_RETRY_DELAYS = { 30, 120, 300, 900, 1800, 3600 }
 
 local DiagnosticLog
 local SyncClient
@@ -70,6 +71,7 @@ local LocalLibrary
 local AnnotationAdapter
 local ReadingStatisticsAdapter
 local SettingsBackupAdapter
+local SettingsBackupLifecycle
 local DeluxeProfileAdapter
 
 local ProgressSyncDeluxe = WidgetContainer:extend{
@@ -232,6 +234,7 @@ function ProgressSyncDeluxe:init()
         AnnotationAdapter = require("AnnotationAdapter")
         ReadingStatisticsAdapter = require("ReadingStatisticsAdapter")
         SettingsBackupAdapter = require("SettingsBackupAdapter")
+        SettingsBackupLifecycle = require("SettingsBackupLifecycle")
         DeluxeProfileAdapter = require("DeluxeProfileAdapter")
         self.store = ServerStore:new()
         DiagnosticLog.configure(self.store.data.settings.logging_enabled ~= false)
@@ -1281,7 +1284,7 @@ end
 
 function ProgressSyncDeluxe:syncSettingsBackupForServer(server, callback)
     callback = callback or function() end
-    if not self.store or not SettingsBackupAdapter or not server or server.enabled == false then
+    if not self.store or not SettingsBackupAdapter or not SettingsBackupLifecycle or not server or server.enabled == false then
         callback(false, nil, "Settings backup sync is unavailable")
         return
     end
@@ -1321,9 +1324,21 @@ function ProgressSyncDeluxe:syncSettingsBackupForServer(server, callback)
     local unchanged = stored_state.checksum == captured.checksum
         and tostring(stored_state.koreader_version or "") == tostring(registration.koreader_version or "")
         and profile_unchanged
+    local sync_token = {}
 
-    local function finish(ok, status, message)
-        self.settings_backup_in_flight[sync_key] = nil
+    local function finish(ok, status, message, snapshot, uploaded)
+        if uploaded and type(snapshot) == "table" then
+            self.store:saveSettingsBackupState(server.id, {
+                checksum = captured.checksum,
+                deluxe_profile_checksum = deluxe_capture and deluxe_capture.checksum or stored_state.deluxe_profile_checksum,
+                koreader_version = registration.koreader_version,
+                snapshot_id = snapshot.snapshot_id,
+                uploaded_at = os.time(),
+            })
+        end
+        if self.settings_backup_in_flight[sync_key] == sync_token then
+            self.settings_backup_in_flight[sync_key] = nil
+        end
         if DiagnosticLog then
             DiagnosticLog.log("settings backup sync", serverLabel(server), "ok", ok and true or false, "status", status or "nil", "message", message or "")
         end
@@ -1334,11 +1349,14 @@ function ProgressSyncDeluxe:syncSettingsBackupForServer(server, callback)
         callback(ok, status, message)
     end
 
-    self.settings_backup_in_flight[sync_key] = true
-    if unchanged then
-        finish(true, 200, "Settings backup is up to date")
-        return
-    end
+    self.settings_backup_in_flight[sync_key] = sync_token
+    UIManager:scheduleIn(15, function()
+        if self.settings_backup_in_flight[sync_key] ~= sync_token then return end
+        self.settings_backup_in_flight[sync_key] = nil
+        if DiagnosticLog then
+            DiagnosticLog.log("settings backup sync watchdog", serverLabel(server), "message", "Cleared stale in-flight state")
+        end
+    end)
 
     local payload = {
         legacy_device_id = tostring(self.store.data.device_id),
@@ -1357,21 +1375,40 @@ function ProgressSyncDeluxe:syncSettingsBackupForServer(server, callback)
         }
     end
 
-    client:putSettingsBackup(server.username, server.userkey, payload, function(ok, status, body)
-        local data = decode(body)
-        if not ok or status ~= 200 or type(data) ~= "table" or type(data.snapshot) ~= "table" then
-            finish(false, status, serverResponseMessage(body) or body or "Settings backup upload failed")
-            return
-        end
-        self.store:saveSettingsBackupState(server.id, {
-            checksum = captured.checksum,
-            deluxe_profile_checksum = deluxe_capture and deluxe_capture.checksum or stored_state.deluxe_profile_checksum,
-            koreader_version = registration.koreader_version,
-            snapshot_id = data.snapshot.snapshot_id,
-            uploaded_at = os.time(),
-        })
-        finish(true, status, data.created == false and "Settings backup already stored" or "Settings backup uploaded")
-    end)
+    SettingsBackupLifecycle.run({
+        unchanged = unchanged,
+        stored_state = stored_state,
+        checksum = captured.checksum,
+        schema_version = SettingsBackupAdapter.SCHEMA_VERSION,
+        get = function(snapshot_id, done)
+            client:getSettingsBackup(server.username, server.userkey, snapshot_id, function(ok, status, body)
+                local data = decode(body)
+                done(ok, status, data, serverResponseMessage(body) or (not ok and "Settings backup presence check failed" or nil))
+            end)
+        end,
+        invalidate = function(snapshot_id)
+            if tostring(stored_state.snapshot_id or "") ~= tostring(snapshot_id or "") then return end
+            stored_state = {
+                checksum = captured.checksum,
+                deluxe_profile_checksum = deluxe_capture and deluxe_capture.checksum or stored_state.deluxe_profile_checksum,
+                koreader_version = registration.koreader_version,
+                snapshot_id = nil,
+                uploaded_at = 0,
+            }
+            self.store:saveSettingsBackupState(server.id, stored_state)
+            if DiagnosticLog then
+                DiagnosticLog.log("settings backup snapshot missing", serverLabel(server), "snapshot", tostring(snapshot_id))
+            end
+        end,
+        upload = function(done)
+            local upload_client = self:newClient(server)
+            upload_client:putSettingsBackup(server.username, server.userkey, payload, function(ok, status, body)
+                local data = decode(body)
+                done(ok, status, data, serverResponseMessage(body) or body or "Settings backup upload failed")
+            end)
+        end,
+        finish = finish,
+    })
 end
 
 function ProgressSyncDeluxe:syncSettingsBackupsForAll()
@@ -1591,13 +1628,49 @@ function ProgressSyncDeluxe:newClient(server)
     }
 end
 
+function ProgressSyncDeluxe:cancelQueueRetry()
+    if not self.queue_retry_action then return end
+    UIManager:unschedule(self.queue_retry_action)
+    self.queue_retry_action = nil
+end
+
+function ProgressSyncDeluxe:scheduleQueueRetry()
+    self:cancelQueueRetry()
+    if not self.queue or self.queue:count() == 0 or not NetworkMgr:isOnline() then return end
+
+    local now = os.time()
+    local next_retry_at = nil
+    for _, item in ipairs(self.queue:list()) do
+        local server = self.store:getServer(item.server_id)
+        if server and server.enabled ~= false and item.retry_blocked ~= true and item.auto_retry_exhausted ~= true then
+            local due = tonumber(item.next_retry_at) or now
+            if next_retry_at == nil or due < next_retry_at then next_retry_at = due end
+        end
+    end
+    if next_retry_at == nil then return end
+
+    local delay = math.max(1, next_retry_at - now)
+    local action
+    action = function()
+        if self.queue_retry_action ~= action then return end
+        self.queue_retry_action = nil
+        if not NetworkMgr:isOnline() then return end
+        self:retryQueue(false, nil, "background")
+    end
+    self.queue_retry_action = action
+    UIManager:scheduleIn(delay, action)
+    if DiagnosticLog then DiagnosticLog.log("queue retry scheduled", "seconds", delay, "items", self.queue:count()) end
+end
+
 function ProgressSyncDeluxe:queueForServer(server, item)
     self.queue:push(item)
+    self:scheduleQueueRetry()
     local count = self.queue:count(server.id)
     if count < QUEUE_DISABLE_THRESHOLD then return false end
 
     self.store:setServerEnabled(server.id, false)
     self.queue:removeServer(server.id)
+    self:scheduleQueueRetry()
     if DiagnosticLog then DiagnosticLog.log("server auto disabled", serverLabel(server), "queued", count) end
     UIManager:show(InfoMessage:new{
         text = T(_("%1 automatically disabled after %2 queued updates."), serverLabel(server), QUEUE_DISABLE_THRESHOLD),
@@ -1655,17 +1728,22 @@ function ProgressSyncDeluxe:pushAll(interactive)
             if isBookNotFoundResponse(status, body) then
                 not_tracked = not_tracked + 1
                 self.queue:remove(server.id, document)
+                self:scheduleQueueRetry()
                 if DiagnosticLog then DiagnosticLog.log("push not tracked", serverLabel(server), "document", document, "status", status, "body", body) end
             elseif status == 401 then
                 failed = failed + 1
             else
                 queued = queued + 1
+                local now = os.time()
                 local auto_disabled = self:queueForServer(server, {
                     server_id = server.id,
                     document = document,
                     payload = failed_payload,
                     reason = queueFailureReason(status, body),
                     last_status = status,
+                    failure_count = 1,
+                    last_attempt_at = now,
+                    next_retry_at = now + QUEUE_RETRY_DELAYS[1],
                 })
                 if auto_disabled then
                     queued = queued - 1
@@ -1680,12 +1758,14 @@ function ProgressSyncDeluxe:pushAll(interactive)
                 if ok and (status == 200 or status == 202) then
                     success = success + 1
                     self.queue:remove(server.id, document)
+                    self:scheduleQueueRetry()
                     if is_metadata_probe then
                         self.store:setCapability(server.id, "metadata_compatible", true)
                     end
                     self:heartbeatDevice(server, nil, false)
                     self:syncAnnotationsForServer(server, document)
                     self:syncReadingStatisticsForServer(server)
+                    self:syncSettingsBackupForServer(server)
                     done()
                 elseif is_metadata_probe and (status == 400 or status == 404 or status == 422) then
                     if DiagnosticLog then DiagnosticLog.log("metadata fallback", serverLabel(server), "status", status, "body", body) end
@@ -1766,7 +1846,7 @@ function ProgressSyncDeluxe:showQueuedUpdates()
         actions = {
             { text = _("Retry Queued Updates"), callback = function(card)
                 UIManager:close(card)
-                self:retryQueue(true, function() self:showQueuedUpdates() end)
+                self:retryQueue(true, function() self:showQueuedUpdates() end, "manual")
             end },
             { text = _("Close") },
         }
@@ -1774,7 +1854,10 @@ function ProgressSyncDeluxe:showQueuedUpdates()
     self:showStatusCard(_("Queued Updates"), rows, actions)
 end
 
-function ProgressSyncDeluxe:retryQueue(interactive, complete_callback)
+function ProgressSyncDeluxe:retryQueue(interactive, complete_callback, retry_mode)
+    local mode = retry_mode or (interactive and "manual" or "background")
+    self:cancelQueueRetry()
+
     local stale_server_ids = {}
     for unused_index, item in ipairs(self.queue:list()) do
         local server = self.store:getServer(item.server_id)
@@ -1785,18 +1868,56 @@ function ProgressSyncDeluxe:retryQueue(interactive, complete_callback)
         if DiagnosticLog then DiagnosticLog.log("queue cleanup", "server", server_id, "reason", "missing or disabled") end
     end
 
-    local items = self.queue:list()
+    local now = os.time()
+    local items = {}
+    local queue_state_changed = false
+    for _, item in ipairs(self.queue:list()) do
+        local server = self.store:getServer(item.server_id)
+        if server and server.enabled ~= false then
+            local include = true
+            if mode == "background" then
+                include = item.retry_blocked ~= true
+                    and item.auto_retry_exhausted ~= true
+                    and (tonumber(item.next_retry_at) == nil or tonumber(item.next_retry_at) <= now)
+            elseif mode == "network" then
+                include = item.retry_blocked ~= true
+                if include and item.auto_retry_exhausted == true then
+                    item.failure_count = 0
+                    item.next_retry_at = nil
+                    item.auto_retry_exhausted = false
+                    queue_state_changed = true
+                end
+            elseif mode == "manual" then
+                item.failure_count = 0
+                item.next_retry_at = nil
+                item.auto_retry_exhausted = false
+                item.retry_blocked = false
+                queue_state_changed = true
+            end
+            if include then table.insert(items, item) end
+        end
+    end
+    if queue_state_changed then self.queue:save() end
+
     if #items == 0 then
-        if interactive then UIManager:show(InfoMessage:new{ text = _("No queued progress updates.") }) end
+        self:scheduleQueueRetry()
+        if interactive then UIManager:show(InfoMessage:new{ text = _("No queued progress updates are ready to retry.") }) end
         if complete_callback then complete_callback() end
         return
     end
 
     local pending = 0
     local scan_complete = false
+    local completion_called = false
+    local function finish()
+        if completion_called then return end
+        completion_called = true
+        self:scheduleQueueRetry()
+        if complete_callback then complete_callback() end
+    end
     local function done()
         pending = pending - 1
-        if scan_complete and pending == 0 and complete_callback then complete_callback() end
+        if scan_complete and pending == 0 then finish() end
     end
 
     for unused_index, item in ipairs(items) do
@@ -1825,18 +1946,39 @@ function ProgressSyncDeluxe:retryQueue(interactive, complete_callback)
                 if ok and (status == 200 or status == 202) then
                     self.queue:remove(item.server_id, item.document)
                     self:heartbeatDevice(server, nil, false)
+                    self:syncReadingStatisticsForServer(server)
+                    self:syncSettingsBackupForServer(server)
                 elseif isBookNotFoundResponse(status, body) then
                     self.queue:remove(item.server_id, item.document)
                     if DiagnosticLog then DiagnosticLog.log("queue drop not tracked", serverLabel(server), "document", item.document, "status", status, "body", body) end
+                elseif status == 401 then
+                    local failure_count = (tonumber(item.failure_count) or 0) + 1
+                    self.queue:updateFailure(item.server_id, item.document, status, queueFailureReason(status, body), {
+                        failure_count = failure_count,
+                        next_retry_at = nil,
+                        auto_retry_exhausted = true,
+                        retry_blocked = true,
+                    })
                 else
-                    self.queue:updateFailure(item.server_id, item.document, status, queueFailureReason(status, body))
+                    local failure_count = (tonumber(item.failure_count) or 0) + 1
+                    local retry_delay = QUEUE_RETRY_DELAYS[failure_count]
+                    local exhausted = retry_delay == nil
+                    self.queue:updateFailure(item.server_id, item.document, status, queueFailureReason(status, body), {
+                        failure_count = failure_count,
+                        next_retry_at = retry_delay and (os.time() + retry_delay) or nil,
+                        auto_retry_exhausted = exhausted,
+                        retry_blocked = false,
+                    })
+                    if exhausted and DiagnosticLog then
+                        DiagnosticLog.log("queue auto retry exhausted", serverLabel(server), "document", item.document, "failures", failure_count)
+                    end
                 end
                 done()
             end)
         end
     end
     scan_complete = true
-    if pending == 0 and complete_callback then complete_callback() end
+    if pending == 0 then finish() end
     if interactive then UIManager:show(InfoMessage:new{ text = _("Queued updates are being retried.") }) end
 end
 
@@ -4463,6 +4605,7 @@ function ProgressSyncDeluxe:onReaderReady()
     self.last_auto_sync_page = self.ui.getCurrentPage and self.ui:getCurrentPage() or nil
     self:scheduleAutomaticUpdateCheck()
     if NetworkMgr:isOnline() then
+        UIManager:scheduleIn(1, function() self:scheduleQueueRetry() end)
         UIManager:scheduleIn(2, function() self:syncReadingStatisticsForAll() end)
         UIManager:scheduleIn(2.5, function() self:syncSettingsBackupsForAll() end)
     end
@@ -4480,6 +4623,7 @@ end
 
 function ProgressSyncDeluxe:onResume()
     if NetworkMgr:isOnline() then
+        UIManager:scheduleIn(0.5, function() self:scheduleQueueRetry() end)
         UIManager:scheduleIn(1.5, function() self:syncReadingStatisticsForAll() end)
         UIManager:scheduleIn(2, function() self:syncSettingsBackupsForAll() end)
     end
@@ -4494,11 +4638,10 @@ end
 function ProgressSyncDeluxe:onNetworkConnected()
     self:scheduleAutomaticUpdateCheck()
     UIManager:scheduleIn(1, function() self:refreshEnhancedCapabilitiesForAll() end)
-    if not self:canAutoSync() then return end
     UIManager:scheduleIn(0.5, function()
         self:retryQueue(false, function()
-            self:autoSyncPull()
-        end)
+            if self:canAutoSync() then self:autoSyncPull() end
+        end, "network")
     end)
 end
 

@@ -103,6 +103,12 @@
       "payload": ["legacy_device_id", "koreader_device_id", "device", "koreader_version", "schema_version", "client_redacted_count", "settings", "deluxe_profile"],
       "expected_status": [200, 400, 401, 404, 405, 409, 422]
     },
+    "get_settings_backup": {
+      "path": "/api/v1/settings/backups/:snapshot_id",
+      "method": "GET",
+      "required_params": ["snapshot_id"],
+      "expected_status": [200, 400, 401, 404, 405]
+    },
     "get_current_settings_restore": {
       "path": "/api/v1/settings/restores/current",
       "method": "GET",
