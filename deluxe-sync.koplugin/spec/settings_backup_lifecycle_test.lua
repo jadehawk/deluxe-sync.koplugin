@@ -91,6 +91,26 @@ assert(converged.upload == 0, "present replacement snapshot must not be uploaded
 assert(#converged.invalidated == 0, "matching replacement snapshot must remain valid")
 assert(#converged.finishes == 1 and converged.finishes[1].uploaded == false, "matching replacement snapshot must finish without upload")
 
+local server_canonical_checksum = runLifecycle(state, {
+    get = {
+        {
+            ok = true,
+            status = 200,
+            data = {
+                snapshot = {
+                    snapshot_id = "snapshot-b",
+                    checksum = "server-canonical-checksum",
+                    schema_version = 2,
+                },
+            },
+        },
+    },
+    upload = {},
+})
+assert(server_canonical_checksum.upload == 0, "an existing remembered snapshot must not be re-uploaded only because the server checksum differs from the client canonical checksum")
+assert(#server_canonical_checksum.invalidated == 0, "server checksum canonicalization differences must not invalidate a present snapshot")
+assert(#server_canonical_checksum.finishes == 1 and server_canonical_checksum.finishes[1].message == "Settings backup is up to date", "present snapshot with server-canonical checksum must converge without upload")
+
 local transient_state = {
     checksum = "checksum-a",
     snapshot_id = "snapshot-c",

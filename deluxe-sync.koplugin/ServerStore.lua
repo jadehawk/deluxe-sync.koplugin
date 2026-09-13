@@ -16,6 +16,7 @@ local defaults = {
     servers = {},
     aliases = {},
     known_documents = {},
+    known_documents_meta = {},
     annotation_sync = {},
     reading_statistics_sync = {},
     settings_backup_sync = {},
@@ -48,6 +49,7 @@ function ServerStore:new()
     o.data.servers = o.data.servers or {}
     o.data.aliases = o.data.aliases or {}
     o.data.known_documents = o.data.known_documents or {}
+    o.data.known_documents_meta = o.data.known_documents_meta or {}
     o.data.annotation_sync = o.data.annotation_sync or {}
     o.data.reading_statistics_sync = o.data.reading_statistics_sync or {}
     o.data.settings_backup_sync = o.data.settings_backup_sync or {}
@@ -112,6 +114,18 @@ function ServerStore:setSkippedUpdateVersion(version)
         return nil, "Skipped update version must be a non-empty string"
     end
     self.data.settings.skipped_update_version = version
+    self:flush()
+    return true
+end
+
+function ServerStore:getSetting(key, default)
+    local value = self.data.settings[key]
+    if value == nil then return default end
+    return value
+end
+
+function ServerStore:setSetting(key, value)
+    self.data.settings[key] = value
     self:flush()
     return true
 end
@@ -209,6 +223,7 @@ function ServerStore:removeServer(id)
         if self.data.servers[i].id == id then table.remove(self.data.servers, i) end
     end
     self.data.known_documents[id] = nil
+    self.data.known_documents_meta[id] = nil
     self.data.annotation_sync[id] = nil
     self.data.reading_statistics_sync[id] = nil
     self.data.settings_backup_sync[id] = nil
@@ -245,13 +260,28 @@ function ServerStore:setCapability(id, key, value)
     self:flush()
 end
 
-function ServerStore:setKnownDocuments(server_id, documents)
+function ServerStore:setKnownDocuments(server_id, documents, options)
     self.data.known_documents[server_id] = documents or {}
+    self.data.known_documents_meta = self.data.known_documents_meta or {}
+    local meta = self.data.known_documents_meta[server_id] or {}
+    options = type(options) == "table" and options or {}
+    if options.logical_mode ~= nil then meta.logical_mode = options.logical_mode == true end
+    if options.refreshed_at ~= nil then meta.refreshed_at = math.max(0, tonumber(options.refreshed_at) or 0) end
+    self.data.known_documents_meta[server_id] = meta
     self:flush()
 end
 
 function ServerStore:getKnownDocuments(server_id)
     return self.data.known_documents[server_id] or {}
+end
+
+function ServerStore:getKnownDocumentsMeta(server_id)
+    local meta = self.data.known_documents_meta and self.data.known_documents_meta[server_id] or nil
+    if type(meta) ~= "table" then return { refreshed_at = 0, logical_mode = false } end
+    return {
+        refreshed_at = math.max(0, tonumber(meta.refreshed_at) or 0),
+        logical_mode = meta.logical_mode == true,
+    }
 end
 
 function ServerStore:addAlias(canonical_document, server_id, remote_document, metadata)

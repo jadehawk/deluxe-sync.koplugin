@@ -1,9 +1,8 @@
 local SettingsBackupLifecycle = {}
 
-local function snapshotMatches(snapshot, snapshot_id, checksum, schema_version)
+local function snapshotMatches(snapshot, snapshot_id, schema_version)
     return type(snapshot) == "table"
         and tostring(snapshot.snapshot_id or "") == tostring(snapshot_id or "")
-        and tostring(snapshot.checksum or "") == tostring(checksum or "")
         and tonumber(snapshot.schema_version or 0) == tonumber(schema_version or 0)
 end
 
@@ -42,13 +41,14 @@ function SettingsBackupLifecycle.run(options)
         assert(type(options.get) == "function", "settings backup lifecycle presence callback is required")
         options.get(snapshot_id, function(ok, status, data, error_message)
             local snapshot = type(data) == "table" and data.snapshot or nil
-            if ok and status == 200 and snapshotMatches(snapshot, snapshot_id, checksum, schema_version) then
+            if ok and status == 200 and snapshotMatches(snapshot, snapshot_id, schema_version) then
                 finish(true, 200, "Settings backup is up to date", snapshot, false)
                 return
             end
 
             -- A 404 is authoritative: the remembered server snapshot no longer exists.
-            -- A successful 200 with the wrong identity/checksum/schema is also stale state.
+            -- A successful 200 with the wrong identity/schema is also stale state. The
+            -- server checksum may legitimately differ from the client's canonical checksum.
             if ok and (status == 404 or status == 200) then
                 if type(options.invalidate) == "function" then options.invalidate(snapshot_id) end
                 uploadSnapshot()

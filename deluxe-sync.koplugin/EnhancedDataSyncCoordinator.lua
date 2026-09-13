@@ -20,13 +20,26 @@ function EnhancedDataSyncCoordinator:new(owner)
         running = false,
         rerun = false,
         pending_documents = {},
+        active_documents = {},
+        completed_runs = 0,
     }, self)
 end
 
 function EnhancedDataSyncCoordinator:nudge(documents, immediate)
-    mergeDocuments(self.pending_documents, documents)
+    local changed = false
+    if type(documents) == "table" then
+        for server_id, document in pairs(documents) do
+            if document and document ~= "" then
+                server_id = tostring(server_id)
+                if self.pending_documents[server_id] ~= document and self.active_documents[server_id] ~= document then
+                    self.pending_documents[server_id] = document
+                    changed = true
+                end
+            end
+        end
+    end
     if self.running then
-        self.rerun = true
+        if changed then self.rerun = true end
         return
     end
     if self.scheduled then return end
@@ -51,12 +64,19 @@ function EnhancedDataSyncCoordinator:run()
     if #servers == 0 then return end
 
     self.running = true
-    local documents = self.pending_documents
+    local documents = {}
+    if type(owner.getOptionalDataDocuments) == "function" then
+        mergeDocuments(documents, owner:getOptionalDataDocuments())
+    end
+    mergeDocuments(documents, self.pending_documents)
     self.pending_documents = {}
+    self.active_documents = documents
     local index = 1
 
     local function finish()
         self.running = false
+        self.active_documents = {}
+        self.completed_runs = self.completed_runs + 1
         if self.rerun or next(self.pending_documents) ~= nil then
             self.rerun = false
             self:nudge(nil, false)

@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.0.0] - 2026-09-13
+
+### Changed
+
+- Promoted the accumulated Deluxe-Sync enhanced-server, privacy, backup, library, and UI work to the four-part release version line.
+- Server editing now uses a centered **Authenticate / Sign in** action that validates the current draft credentials, saves them only after successful authentication, and refreshes server capabilities in the same flow.
+- Simplified the server edit page by removing duplicate Synced Books and enable/disable actions, shortening the server address label to **URL**, and truncating long displayed URLs.
+- Confirmed direct updater compatibility from the live 0.1.2 release to 0.2.0.0 and future four-part updates such as 0.2.0.1.
+
 ## [0.1.15] - 2026-09-10
 
 ### Fixed
