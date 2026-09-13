@@ -2233,13 +2233,13 @@ function ProgressSyncDeluxe:showServerSettingsPage(existing)
                 end,
             })
         end,
-        on_recovery = function(_, draft)
+        on_recovery = function(_current, draft)
             if not requireSaved() then return end
             local saved = self.store:getServer(draft.id) or existing
             closePage()
             self:showRecoveryDialog(saved)
         end,
-        on_delete = function(_, draft)
+        on_delete = function(_current, draft)
             UIManager:show(ConfirmBox:new{
                 text = T(_("Delete %1 from Deluxe-Sync?\nThis cannot be undone."), serverLabel(draft)),
                 cancel_text = _("Cancel"),

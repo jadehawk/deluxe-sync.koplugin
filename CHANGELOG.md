@@ -2,12 +2,60 @@
 
 ## [0.2.0.0] - 2026-09-13
 
-### Changed
+Deluxe-Sync 0.2.0.0 is a major roll-up release containing all improvements made since the public 0.1.2 release. Standard KOSync progress syncing remains compatible with ordinary KOSync servers; the additional features below are used only when a server advertises support for them.
 
-- Promoted the accumulated Deluxe-Sync enhanced-server, privacy, backup, library, and UI work to the four-part release version line.
+### Books, progress, and multi-device syncing
+
+- Added per-server document matching choices. **Binary** matching remains the default, while **Filename** matching can be selected for libraries where the same book file differs between devices.
+- Added a much richer **Synced Books** browser for compatible servers, including list/grid layouts, book covers, record details, and easier navigation of the remote library.
+- Added **Logical Books** linking so alternate copies or formats of the same title can be grouped as one book without deleting or replacing their original sync records. Links can be inspected and undone later.
+- When linking books, Deluxe-Sync now lets you choose which copy supplies the initial shared reading position instead of assuming that the newest record is the correct one. The furthest stored position is recommended by default.
+- Added richer reading positions for compatible servers, including a portable percentage plus real KOReader page/page-count hints and XPointer data when available. This makes progress transfer between linked editions safer while exact same-file sync still uses KOReader's native position.
+- Added durable device registration for compatible servers using KOReader's device identity, model/platform, KOReader version, and Deluxe-Sync version while keeping the existing Deluxe device ID compatible.
+
+### Highlights, reading history, and Vocabulary Builder
+
+- Added optional synchronization of KOReader **highlights, notes, and bookmarks** on compatible servers. Edits and deletions converge between devices, including protection against stale offline copies silently restoring an annotation that was deleted elsewhere.
+- Added optional, read-only upload of KOReader **Reading Statistics**. Existing `statistics.sqlite3` history can be imported in resumable batches, later uploads are incremental, and Deluxe-Sync never writes to KOReader's live statistics database.
+- Added optional **Vocabulary Builder** synchronization for compatible servers. Deluxe-Sync reads KOReader's vocabulary database in read-only mode and sends only new, changed, or deleted vocabulary records after the first sync.
+- Vocabulary **Reading Context** is a separate opt-in choice because it can include surrounding book passages or highlighted text. It cannot be enabled unless Vocabulary Builder sharing is also enabled.
+
+### Backups and moving Deluxe-Sync to another reader
+
+- Added optional per-device **KOReader Settings Backup** for compatible servers. Backups use a core-only, fail-closed settings list and exclude credentials, device identity, third-party plugin data, caches, timestamps, current navigation/session state, frontlight/night-mode state, and other volatile values.
+- Settings backups are checksum-deduplicated so normal reading activity does not create unnecessary snapshots. If a remembered server snapshot was deleted, Deluxe-Sync now detects that and recreates the backup automatically.
+- Same-device settings restores always require confirmation on the reader and are revalidated immediately before applying, so a request that was deleted or cancelled on the server cannot be restored from stale local data.
+- Added optional **Deluxe-Sync Config Backup** for moving the plugin to another reader. It can restore configured server URLs, usernames, Deluxe-Sync preferences, and the saved authentication needed to reconnect to the same existing accounts and already-synced progress.
+- Config migration is explicitly confirmed on the destination reader and targeted to that reader. The destination keeps its own device identity and local sync caches rather than pretending to be the old device.
+
+### Privacy and data-sharing controls
+
+- Added a per-server **Data Sharing** review so enhanced data is no longer treated as implicitly enabled. Reading progress remains the required core sync service; Book Metadata, Annotations, Reading Statistics, KOReader Settings Backup, Deluxe-Sync Config Backup, Vocabulary Builder, and Vocabulary Reading Context can be controlled separately.
+- Existing server configurations that predate the privacy controls fail closed for the new enhanced-data categories and are presented for review rather than silently sharing additional data.
+- Deluxe-Sync warns before enabling Config Backup because it includes saved authentication keys, and separately warns before enabling Vocabulary Reading Context because book excerpts may be stored on the server.
+- Restoring a Deluxe-Sync configuration does not silently grant new data-sharing consent on the destination reader.
+- Standard KOSync servers continue to receive only the compatible KOSync data they support; unsupported enhanced features do not send extra requests.
+
+### Reliability and recovery
+
+- Failed transient progress pushes now use a persisted background retry schedule of 30 seconds, 2 minutes, 5 minutes, 15 minutes, 30 minutes, and 60 minutes. After the sixth background attempt, automatic retry pauses without discarding the queued progress.
+- Retry processing no longer depends on Auto-Sync Documents being enabled when the network reconnects. Authentication failures are intentionally not retried automatically; a manual retry, newer push, or later reconnect can resume eligible queued work.
+- Enhanced server capabilities are refreshed on every network reconnect, and pending restore requests are checked before optional background-data synchronization.
+- Hardened settings-backup convergence so interrupted presence checks/uploads cannot permanently block future backups, and deleted server snapshots are treated as authoritative instead of trusting stale local state.
+- Fixed server Recovery/Delete callbacks so they no longer shadow KOReader's translation helper before translated confirmation text is built.
+
+### Server setup and interface
+
 - Server editing now uses a centered **Authenticate / Sign in** action that validates the current draft credentials, saves them only after successful authentication, and refreshes server capabilities in the same flow.
-- Simplified the server edit page by removing duplicate Synced Books and enable/disable actions, shortening the server address label to **URL**, and truncating long displayed URLs.
-- Confirmed direct updater compatibility from the live 0.1.2 release to 0.2.0.0 and future four-part updates such as 0.2.0.1.
+- Simplified the server edit page by removing duplicate Synced Books and enable/disable actions, shortening the server address label to **URL**, truncating long displayed URLs, and condensing action rows for e-reader screens.
+- Added clearer capability reporting so supported enhanced features can be reviewed per server.
+- Refreshed the README screenshot gallery to match the current Deluxe-Sync interface.
+
+### Updating from 0.1.2
+
+- The built-in updater supports a direct upgrade from the public **0.1.2** release to **0.2.0.0**.
+- Deluxe-Sync now uses four-part release versions. The updater accepts both the older three-part format and the new four-part format, including `v`-prefixed GitHub release tags.
+- **Auto-Sync Documents remains OFF by default** unless the user enables it.
 
 ## [0.1.15] - 2026-09-10
 

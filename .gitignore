@@ -1,11 +1,14 @@
 # This repository publishes only the installable KOReader plugin, its release
-# workflow, and the public README. Everything else in this workspace is local
-# development/reference material and must not be pushed.
+# workflow, public README/changelog, and README screenshot assets. Everything
+# else in this workspace is local development/reference material and must not
+# be pushed.
 /*
 
 !/.gitignore
 !/README.md
 !/CHANGELOG.md
+!/assets/
+!/assets/**
 !/deluxe-sync.koplugin/
 !/deluxe-sync.koplugin/**
 !/.github/

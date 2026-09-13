@@ -41,16 +41,20 @@ When Deluxe-Sync starts with no configured servers, it offers the complimentary 
 ## Screenshots
 
 <p align="center">
-  <img src="assets/deluxe-sync_01.png" width="300" alt="Deluxe-Sync screenshot 1">
-  <img src="assets/deluxe-sync_02.png" width="300" alt="Deluxe-Sync screenshot 2">
-  <img src="assets/deluxe-sync_03.png" width="300" alt="Deluxe-Sync screenshot 3">
-  <img src="assets/deluxe-sync_04.png" width="300" alt="Deluxe-Sync screenshot 4">
-  <img src="assets/deluxe-sync_05.png" width="300" alt="Deluxe-Sync screenshot 5">
-  <img src="assets/deluxe-sync_06.png" width="300" alt="Deluxe-Sync screenshot 6">
-  <img src="assets/deluxe-sync_07.png" width="300" alt="Deluxe-Sync screenshot 7">
-  <img src="assets/deluxe-sync_08.png" width="300" alt="Deluxe-Sync screenshot 8">
-  <img src="assets/deluxe-sync_09.png" width="300" alt="Deluxe-Sync screenshot 9">
-  <img src="assets/deluxe-sync_10.png" width="300" alt="Deluxe-Sync screenshot 10">
+  <img src="assets/01%20-%20Main%20Menu.png" width="300" alt="Deluxe-Sync main menu">
+  <img src="assets/02%20-%20Server_List.png" width="300" alt="Deluxe-Sync server list">
+  <img src="assets/03%20-%20Add_Server.png" width="300" alt="Deluxe-Sync add server screen">
+  <img src="assets/04%20-%20Edit_Server.png" width="300" alt="Deluxe-Sync edit server screen">
+  <img src="assets/05%20-%20Synced_Books_1.png" width="300" alt="Deluxe-Sync synced books screen">
+  <img src="assets/06%20-%20Synced_Books_2.png" width="300" alt="Deluxe-Sync synced books details">
+  <img src="assets/07%20-%20Link_Books_1.png" width="300" alt="Deluxe-Sync link books selection">
+  <img src="assets/07%20-%20Link_Books_2.png" width="300" alt="Deluxe-Sync link books workflow">
+  <img src="assets/07%20-%20Link_Books_3.png" width="300" alt="Deluxe-Sync linked book progress choice">
+  <img src="assets/07%20-%20Link_Books_4.png" width="300" alt="Deluxe-Sync linked books result">
+  <img src="assets/08%20-%20List_Mode.png" width="300" alt="Deluxe-Sync list view">
+  <img src="assets/09%20-%20Grid_Mode.png" width="300" alt="Deluxe-Sync grid view">
+  <img src="assets/10%20-%20Layout_Settings.png" width="300" alt="Deluxe-Sync layout settings">
+  <img src="assets/11%20-%20Pull_Result.png" width="300" alt="Deluxe-Sync pull results">
 </p>
 
 ## Installation
