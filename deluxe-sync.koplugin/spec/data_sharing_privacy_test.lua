@@ -2,6 +2,7 @@ local function readFile(path)
     local file = assert(io.open(path, "rb"))
     local source = file:read("*a")
     file:close()
+    source = source:gsub("\r\n", "\n"):gsub("\r", "\n")
     return source
 end
 
