@@ -5,7 +5,9 @@ local DiagnosticLog = require("DiagnosticLog")
 local UrlUtil = require("UrlUtil")
 
 local PROGRESS_TIMEOUTS = { 2, 5 }
+local SYNC_FALLBACK_TIMEOUTS = { 5, 15 }
 local AUTH_TIMEOUTS = { 5, 10 }
+local BACKGROUND_POLL_INTERVAL = 0.25
 
 local SyncClient = { service_spec = nil, custom_url = nil }
 
@@ -72,6 +74,14 @@ function SyncClient:_setup(username, userkey)
     self.client:enable("Format.JSON")
     self.client:enable("PSDGinClient")
     self.client:enable("PSDAuth", { username = username, userkey = userkey })
+    return true
+end
+
+function SyncClient:_setupPublic()
+    if not self.client then return false, self.init_error or "Sync client is unavailable" end
+    self.client:reset_middlewares()
+    self.client:enable("Format.JSON")
+    self.client:enable("PSDGinClient")
     return true
 end
 
@@ -164,6 +174,11 @@ function SyncClient:capabilities()
     return self:_publicCall("capabilities", {})
 end
 
+function SyncClient:capabilitiesAsync(callback)
+    DiagnosticLog.log("capability request async", self.custom_url or "")
+    self:_async("capabilities", nil, nil, {}, callback, true)
+end
+
 function SyncClient:setRecoveryEmail(username, userkey, email)
     DiagnosticLog.log("recovery email update", self.custom_url or "", "username", username or "", "email", email or "")
     local setup_ok, setup_error = self:_setup(username, userkey)
@@ -207,30 +222,125 @@ function SyncClient:confirmRecovery(username, email, code, new_userkey)
     })
 end
 
-function SyncClient:_async(method, username, userkey, params, callback)
-    local setup_ok, setup_error = self:_setup(username, userkey)
+function SyncClient:_async(method, username, userkey, params, callback, public_request)
+    local setup_ok, setup_error
+    if public_request then
+        setup_ok, setup_error = self:_setupPublic()
+    else
+        setup_ok, setup_error = self:_setup(username, userkey)
+    end
     if not setup_ok then
         DiagnosticLog.log("http request blocked", method, self.custom_url or "", setup_error or "Sync client is unavailable")
         callback(false, nil, setup_error)
         return
     end
     DiagnosticLog.log("http request", method, self.custom_url or "", params or {})
-    socketutil:set_timeout(PROGRESS_TIMEOUTS[1], PROGRESS_TIMEOUTS[2])
-    local co = coroutine.create(function()
-        local ok, res = pcall(function() return self.client[method](self.client, params or {}) end)
+
+    local function deliver(ok, status, body)
         if ok then
-            DiagnosticLog.log("http response", method, self.custom_url or "", "status", res.status, "body", res.body)
-            callback(true, res.status, res.body)
+            DiagnosticLog.log("http response", method, self.custom_url or "", "status", status, "body", body)
+            callback(true, status, body)
         else
-            logger.dbg("Deluxe-Sync request failed:", method, res)
-            DiagnosticLog.log("http failure", method, self.custom_url or "", res)
-            callback(false, nil, nil)
+            local transport_error = tostring(body or "Network or server unavailable")
+            logger.dbg("Deluxe-Sync request failed:", method, transport_error)
+            DiagnosticLog.log("http failure", method, self.custom_url or "", transport_error)
+            callback(false, nil, transport_error)
         end
-    end)
-    self.client:enable("PSDAsyncHTTP", { thread = co })
-    coroutine.resume(co)
-    if UIManager.looper then UIManager:setInputTimeout() end
-    socketutil:reset_timeout()
+    end
+
+    if UIManager.looper then
+        socketutil:set_timeout(PROGRESS_TIMEOUTS[1], PROGRESS_TIMEOUTS[2])
+        local co = coroutine.create(function()
+            local ok, res = pcall(function() return self.client[method](self.client, params or {}) end)
+            if ok then
+                deliver(true, res.status, res.body)
+            else
+                deliver(false, nil, res)
+            end
+        end)
+        self.client:enable("PSDAsyncHTTP", { thread = co })
+        coroutine.resume(co)
+        UIManager:setInputTimeout()
+        socketutil:reset_timeout()
+        return
+    end
+
+    local function runTightSynchronousFallback()
+        socketutil:set_timeout(PROGRESS_TIMEOUTS[1], PROGRESS_TIMEOUTS[2])
+        local ok, res = pcall(function() return self.client[method](self.client, params or {}) end)
+        socketutil:reset_timeout()
+        if ok then
+            deliver(true, res.status, res.body)
+        else
+            deliver(false, nil, res)
+        end
+    end
+
+    -- Turbo is disabled by default on KOReader. Running LuaSec directly here would
+    -- block the reader UI for every HTTPS request, which is especially painful
+    -- when several sync servers are queried on book open. Do the synchronous
+    -- Spore/LuaSec request in a forked background process and only deliver its
+    -- small serialized result back on the main UI loop.
+    local ffi_ok, ffiutil = pcall(require, "ffi/util")
+    local buffer_ok, buffer = pcall(require, "string.buffer")
+    if not ffi_ok or not buffer_ok or type(ffiutil.runInSubProcess) ~= "function" then
+        runTightSynchronousFallback()
+        return
+    end
+    local pid, parent_read_fd = ffiutil.runInSubProcess(function(unused_pid, child_write_fd)
+        socketutil:set_timeout(SYNC_FALLBACK_TIMEOUTS[1], SYNC_FALLBACK_TIMEOUTS[2])
+        local ok, res = pcall(function() return self.client[method](self.client, params or {}) end)
+        socketutil:reset_timeout()
+        local result
+        if ok then
+            result = { ok = true, status = res.status, body = res.body }
+        else
+            result = { ok = false, error = tostring(res or "Network or server unavailable") }
+        end
+        local encoded_ok, encoded = pcall(buffer.encode, result)
+        if not encoded_ok then
+            encoded = buffer.encode({ ok = false, error = "Could not serialize background HTTP response" })
+        end
+        ffiutil.writeToFD(child_write_fd, encoded, true)
+    end, true)
+
+    if not pid then
+        -- Last-resort compatibility path for platforms where fork is unavailable.
+        -- Keep KOReader's original tight timeout budget so this can never recreate
+        -- the long reader freeze that the background path is designed to avoid.
+        runTightSynchronousFallback()
+        return
+    end
+
+    local function collectLater()
+        if not ffiutil.isSubProcessDone(pid) then
+            UIManager:scheduleIn(1, collectLater)
+        end
+    end
+
+    local function poll()
+        local has_output = parent_read_fd and ffiutil.getNonBlockingReadSize(parent_read_fd) ~= 0
+        local subprocess_done = ffiutil.isSubProcessDone(pid)
+        if not subprocess_done and not has_output then
+            UIManager:scheduleIn(BACKGROUND_POLL_INTERVAL, poll)
+            return
+        end
+
+        local raw = parent_read_fd and ffiutil.readAllFromFD(parent_read_fd) or ""
+        parent_read_fd = nil
+        if not subprocess_done then UIManager:scheduleIn(1, collectLater) end
+
+        local decoded_ok, result = pcall(buffer.decode, raw)
+        if not decoded_ok or type(result) ~= "table" then
+            deliver(false, nil, "Background HTTP request returned an invalid response")
+        elseif result.ok then
+            deliver(true, result.status, result.body)
+        else
+            deliver(false, nil, result.error)
+        end
+    end
+
+    UIManager:scheduleIn(BACKGROUND_POLL_INTERVAL, poll)
 end
 
 function SyncClient:updateProgress(username, userkey, payload, callback)
@@ -239,6 +349,81 @@ end
 
 function SyncClient:registerDevice(username, userkey, payload, callback)
     self:_async("register_device", username, userkey, payload, callback)
+end
+
+function SyncClient:getAnnotations(username, userkey, document, after, limit, callback)
+    self:_async("get_annotations", username, userkey, {
+        document = document,
+        after = tonumber(after) or 0,
+        limit = tonumber(limit) or 200,
+    }, callback)
+end
+
+function SyncClient:putAnnotations(username, userkey, payload, callback)
+    self:_async("put_annotations", username, userkey, payload, callback)
+end
+
+function SyncClient:putReadingStatistics(username, userkey, payload, callback)
+    self:_async("put_reading_statistics", username, userkey, payload, callback)
+end
+
+function SyncClient:putVocabulary(username, userkey, payload, callback)
+    self:_async("put_vocabulary", username, userkey, payload, callback)
+end
+
+function SyncClient:putSettingsBackup(username, userkey, payload, callback)
+    self:_async("put_settings_backup", username, userkey, payload, callback)
+end
+
+function SyncClient:getSettingsBackup(username, userkey, snapshot_id, callback)
+    self:_async("get_settings_backup", username, userkey, {
+        snapshot_id = snapshot_id,
+    }, callback)
+end
+
+function SyncClient:getCurrentSettingsRestore(username, userkey, legacy_device_id, koreader_device_id, callback)
+    self:_async("get_current_settings_restore", username, userkey, {
+        legacy_device_id = legacy_device_id,
+        koreader_device_id = koreader_device_id,
+    }, callback)
+end
+
+function SyncClient:completeSettingsRestore(username, userkey, request_id, payload, callback)
+    payload = payload or {}
+    payload.request_id = request_id
+    self:_async("complete_settings_restore", username, userkey, payload, callback)
+end
+
+function SyncClient:putDeluxeProfile(username, userkey, payload, callback)
+    self:_async("put_deluxe_profile", username, userkey, payload, callback)
+end
+
+function SyncClient:getDeluxeProfileCandidate(username, userkey, legacy_device_id, koreader_device_id, callback)
+    self:_async("get_deluxe_profile_candidate", username, userkey, {
+        legacy_device_id = legacy_device_id,
+        koreader_device_id = koreader_device_id,
+    }, callback)
+end
+
+function SyncClient:requestDeluxeProfileRestore(username, userkey, profile_id, legacy_device_id, koreader_device_id, callback)
+    self:_async("request_deluxe_profile_restore", username, userkey, {
+        profile_id = profile_id,
+        legacy_device_id = legacy_device_id,
+        koreader_device_id = koreader_device_id,
+    }, callback)
+end
+
+function SyncClient:getCurrentDeluxeProfileRestore(username, userkey, legacy_device_id, koreader_device_id, callback)
+    self:_async("get_current_deluxe_profile_restore", username, userkey, {
+        legacy_device_id = legacy_device_id,
+        koreader_device_id = koreader_device_id,
+    }, callback)
+end
+
+function SyncClient:completeDeluxeProfileRestore(username, userkey, request_id, payload, callback)
+    payload = payload or {}
+    payload.request_id = request_id
+    self:_async("complete_deluxe_profile_restore", username, userkey, payload, callback)
 end
 
 function SyncClient:getProgress(username, userkey, document, callback)

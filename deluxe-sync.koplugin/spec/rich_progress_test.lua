@@ -6,6 +6,8 @@ local function readFile(path)
 end
 
 local main = readFile("main.lua")
+local controller = readFile("EnhancedDataSyncController.lua")
+local lifecycle = readFile("ProgressLifecycleController.lua")
 local store = readFile("ServerStore.lua")
 local api = readFile("api.json")
 
@@ -28,11 +30,11 @@ contains(main, 'function ProgressSyncDeluxe:serverSupportsRichProgress(server)',
 contains(main, 'capabilities.rich_progress == true', "rich progress must require explicit server support")
 contains(main, 'tonumber(capabilities.rich_position_version)', "rich progress must require a supported schema version")
 contains(main, 'payload.position = rich_position', "supported servers must receive rich position")
-contains(main, 'local strip_position = payload.position ~= nil and not self:serverSupportsRichProgress(server)', "queued payloads must strip rich fields for unsupported servers")
+contains(lifecycle, 'local strip_position = payload.position ~= nil and not owner:serverSupportsRichProgress(server)', "queued payloads must strip rich fields for unsupported servers")
 contains(main, 'position = type(data.position) == "table" and data.position or nil', "pull results must retain server rich position")
 contains(main, 'tonumber(group.position.pctQ) / 1000000', "alternate-document pull must use pctQ as portable fallback")
-contains(main, 'self.store:setCapability(server.id, "rich_progress", rich_supported)', "capability probe must cache rich support")
-contains(main, 'self.store:setCapability(server.id, "rich_position_version", rich_position_version)', "capability probe must cache rich schema version")
+contains(controller, 'owner.store:setCapability(server.id, "rich_progress", rich_supported)', "capability probe must cache rich support")
+contains(controller, 'owner.store:setCapability(server.id, "rich_position_version", rich_position_version)', "capability probe must cache rich schema version")
 contains(main, '_("Rich Position")', "server UI must surface rich-position support")
 
 print("rich_progress_test.lua: OK")

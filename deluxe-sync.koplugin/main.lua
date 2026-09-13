@@ -8,6 +8,7 @@ local InfoMessage = require("ui/widget/infomessage")
 local MultiInputDialog = require("ui/widget/multiinputdialog")
 local Button = require("ui/widget/button")
 local ButtonDialog = require("ui/widget/buttondialog")
+local ConfirmBox = require("ui/widget/confirmbox")
 local ButtonTable = require("ui/widget/buttontable")
 local CenterContainer = require("ui/widget/container/centercontainer")
 local LeftContainer = require("ui/widget/container/leftcontainer")
@@ -58,6 +59,7 @@ local plugin_root = source_path:match("^(.*)[/\\]main%.lua$") or "."
 local PluginMeta = dofile(plugin_root .. "/_meta.lua")
 local PLUGIN_VERSION = assert(PluginMeta.version, "Missing plugin version in _meta.lua")
 local QUEUE_DISABLE_THRESHOLD = 20
+local QUEUE_RETRY_DELAYS = { 30, 120, 300, 900, 1800, 3600 }
 
 local DiagnosticLog
 local SyncClient
@@ -67,6 +69,24 @@ local UrlUtil
 local ResponseUtil
 local Resolver
 local LocalLibrary
+local AnnotationAdapter
+local ReadingStatisticsAdapter
+local VocabularyAdapter
+local SettingsBackupAdapter
+local SettingsBackupLifecycle
+local DeluxeProfileAdapter
+local EnhancedDataSyncCoordinator
+local EnhancedDataSyncController
+local RestoreMigrationController
+local ProgressLifecycleController
+local ServerLibraryController
+local VocabularySync
+local ReadingStatisticsSync
+local AnnotationSync
+local SettingsBackupSync
+local DeluxeProfileBackupSync
+local PluginMenuController
+local DeluxeCoverPlaceholder
 
 local ProgressSyncDeluxe = WidgetContainer:extend{
     name = "progresssyncdeluxe",
@@ -198,6 +218,18 @@ function ProgressSyncDeluxe:init()
     self.preview = nil
     self.init_error = nil
     self.device_heartbeat_sent = {}
+    self.annotation_sync_in_flight = {}
+    self.statistics_sync_in_flight = {}
+    self.vocabulary_sync_in_flight = {}
+    self.settings_backup_in_flight = {}
+    self.settings_restore_in_flight = {}
+    self.settings_restore_seen = {}
+    self.deluxe_profile_in_flight = {}
+    self.deluxe_profile_backup_in_flight = {}
+    self.data_sharing_review_shown = false
+    self.deluxe_profile_candidate_seen = {}
+    self.deluxe_profile_restore_in_flight = {}
+    self.deluxe_profile_restore_seen = {}
     ensureReaderMenuOrder()
 
     -- Register first so an initialization failure cannot make the plugin vanish
@@ -207,6 +239,12 @@ function ProgressSyncDeluxe:init()
     local ok, err = pcall(function()
         self.path = plugin_root
         package.path = self.path .. "/?.lua;" .. package.path
+        PluginMenuController = require("PluginMenuController")
+        self.plugin_menu_controller = PluginMenuController:new(self, {
+            plugin_version = PLUGIN_VERSION,
+            suppress_dialog_holds = suppressDialogContainerHolds,
+            get_diagnostic_log = function() return DiagnosticLog end,
+        })
         DiagnosticLog = require("DiagnosticLog")
         DiagnosticLog.log("plugin init", "start")
         SyncClient = require("SyncClient")
@@ -216,9 +254,75 @@ function ProgressSyncDeluxe:init()
         ResponseUtil = require("ResponseUtil")
         Resolver = require("Resolver")
         LocalLibrary = require("LocalLibrary")
+        AnnotationAdapter = require("AnnotationAdapter")
+        ReadingStatisticsAdapter = require("ReadingStatisticsAdapter")
+        VocabularyAdapter = require("VocabularyAdapter")
+        SettingsBackupAdapter = require("SettingsBackupAdapter")
+        SettingsBackupLifecycle = require("SettingsBackupLifecycle")
+        DeluxeProfileAdapter = require("DeluxeProfileAdapter")
+        EnhancedDataSyncCoordinator = require("EnhancedDataSyncCoordinator")
+        EnhancedDataSyncController = require("EnhancedDataSyncController")
+        RestoreMigrationController = require("RestoreMigrationController")
+        ProgressLifecycleController = require("ProgressLifecycleController")
+        ServerLibraryController = require("ServerLibraryController")
+        VocabularySync = require("VocabularySync")
+        ReadingStatisticsSync = require("ReadingStatisticsSync")
+        AnnotationSync = require("AnnotationSync")
+        SettingsBackupSync = require("SettingsBackupSync")
+        DeluxeProfileBackupSync = require("DeluxeProfileBackupSync")
+        DeluxeCoverPlaceholder = require("DeluxeCoverPlaceholder")
         self.store = ServerStore:new()
         DiagnosticLog.configure(self.store.data.settings.logging_enabled ~= false)
         self.queue = SyncQueue:new()
+        self.enhanced_data_sync = EnhancedDataSyncCoordinator:new(self)
+        self.enhanced_data_controller = EnhancedDataSyncController:new(self, self.enhanced_data_sync)
+        self.restore_migration_controller = RestoreMigrationController:new(self, {
+            decode = decode,
+            server_response_message = serverResponseMessage,
+            server_label = serverLabel,
+            suppress_dialog_holds = suppressDialogContainerHolds,
+        })
+        self.progress_lifecycle_controller = ProgressLifecycleController:new(self, {
+            diagnostic_log = DiagnosticLog,
+            server_label = serverLabel,
+            queue_failure_reason = queueFailureReason,
+            is_book_not_found_response = isBookNotFoundResponse,
+            queue_retry_delays = QUEUE_RETRY_DELAYS,
+        })
+        self.server_library_controller = ServerLibraryController:new(self, {
+            decode = decode,
+            format_percent = formatPercent,
+            server_response_message = serverResponseMessage,
+            server_label = serverLabel,
+            suppress_dialog_holds = suppressDialogContainerHolds,
+        })
+        self.vocabulary_sync_service = VocabularySync:new(self, {
+            adapter = VocabularyAdapter,
+            server_label = serverLabel,
+            server_response_message = serverResponseMessage,
+        })
+        self.reading_statistics_sync_service = ReadingStatisticsSync:new(self, {
+            adapter = ReadingStatisticsAdapter,
+            server_label = serverLabel,
+            server_response_message = serverResponseMessage,
+        })
+        self.annotation_sync_service = AnnotationSync:new(self, {
+            adapter = AnnotationAdapter,
+            decode = decode,
+            server_label = serverLabel,
+        })
+        self.settings_backup_sync_service = SettingsBackupSync:new(self, {
+            adapter = SettingsBackupAdapter,
+            lifecycle = SettingsBackupLifecycle,
+            decode = decode,
+            server_label = serverLabel,
+            server_response_message = serverResponseMessage,
+        })
+        self.deluxe_profile_backup_sync_service = DeluxeProfileBackupSync:new(self, {
+            adapter = DeluxeProfileAdapter,
+            server_label = serverLabel,
+            server_response_message = serverResponseMessage,
+        })
         DiagnosticLog.log("plugin init", "storage ready", "servers", #self.store:listServers(), "queue", self.queue:count())
         if not self.store.data.device_id then
             self.store.data.device_id = md5(table.concat({ tostring(Device.model or "device"), tostring(os.time()), tostring(math.random()) }, ":"))
@@ -234,289 +338,47 @@ function ProgressSyncDeluxe:init()
 end
 
 function ProgressSyncDeluxe:onDispatcherRegisterActions()
-    Dispatcher:registerAction("deluxe_sync_set_autosync",
-        { category="string", event="DeluxeSyncToggleAutoSync", title=_("Deluxe-Sync: Set Auto-Sync"), reader=true,
-        args={true, false}, toggle={_("on"), _("off")},})
-    Dispatcher:registerAction("deluxe_sync_toggle_autosync", { category="none", event="DeluxeSyncToggleAutoSync", title=_("Deluxe-Sync: Toggle Auto-Sync"), reader=true,})
-    Dispatcher:registerAction("deluxe_sync_push_progress", { category="none", event="DeluxeSyncPushProgress", title=_("Deluxe-Sync: Push progress to all"), reader=true,})
-    Dispatcher:registerAction("deluxe_sync_pull_progress", { category="none", event="DeluxeSyncPullProgress", title=_("Deluxe-Sync: Pull progress from all"), reader=true, separator=true,})
+    if not self.plugin_menu_controller then return end
+    return self.plugin_menu_controller:onDispatcherRegisterActions()
 end
 
 function ProgressSyncDeluxe:canManualSync()
-    return self.store ~= nil
-        and self.ui ~= nil
-        and self.ui.document ~= nil
-        and not self.preview
-        and #self.store:getEnabledServers() > 0
+    return self.plugin_menu_controller ~= nil and self.plugin_menu_controller:canManualSync()
 end
 
 function ProgressSyncDeluxe:showManualSyncUnavailable()
-    local text
-    if self.init_error then
-        text = T(_("Deluxe-Sync failed to initialize:\n\n%1"), self.init_error)
-    elseif self.preview then
-        text = _("Preview mode is active. Exit or accept the preview before syncing.")
-    elseif not self.store or not self.ui or self.ui.document == nil then
-        text = _("Deluxe-Sync is not ready for this document.")
-    else
-        text = _("No enabled sync servers are configured.")
-    end
-    UIManager:show(InfoMessage:new{ text = text, timeout = 3 })
+    if not self.plugin_menu_controller then return end
+    return self.plugin_menu_controller:showManualSyncUnavailable()
 end
 
 function ProgressSyncDeluxe:onDeluxeSyncToggleAutoSync(toggle)
-    if not self.store then
-        self:showManualSyncUnavailable()
-        return true
-    end
-
-    local enabled = toggle
-    if enabled == nil then enabled = self.store.data.settings.auto_sync ~= true end
-    enabled = enabled == true
-    if self.store.data.settings.auto_sync ~= enabled then
-        self.store.data.settings.auto_sync = enabled
-        self.store:flush()
-    end
-    UIManager:show(InfoMessage:new{
-        text = enabled and _("Deluxe-Sync Auto-Sync: on") or _("Deluxe-Sync Auto-Sync: off"),
-        timeout = 3,
-    })
-    return true
+    if not self.plugin_menu_controller then return true end
+    return self.plugin_menu_controller:onDeluxeSyncToggleAutoSync(toggle)
 end
 
 function ProgressSyncDeluxe:onDeluxeSyncPushProgress()
-    if not self:canManualSync() then
-        self:showManualSyncUnavailable()
-        return true
-    end
-    self:pushAll(true)
-    return true
+    if not self.plugin_menu_controller then return true end
+    return self.plugin_menu_controller:onDeluxeSyncPushProgress()
 end
 
 function ProgressSyncDeluxe:onDeluxeSyncPullProgress()
-    if not self:canManualSync() then
-        self:showManualSyncUnavailable()
-        return true
-    end
-    self:pullAll(true)
-    return true
+    if not self.plugin_menu_controller then return true end
+    return self.plugin_menu_controller:onDeluxeSyncPullProgress()
 end
 
 function ProgressSyncDeluxe:showServerOnboarding()
-    local dialog
-    dialog = ButtonDialog:new{
-        title = _("There are no servers registered. Would you like to set one up now?"),
-        title_align = "left",
-        buttons = {
-            {{
-                text = _("Use complimentary Techy-Notes.com server"),
-                callback = function()
-                    UIManager:close(dialog)
-                    self:addServerDialog{
-                        name = "Techy-Notes.com",
-                        url = "https://sync.techy-notes.com",
-                    }
-                end,
-            }},
-            {{
-                text = _("Add custom server"),
-                callback = function()
-                    UIManager:close(dialog)
-                    self:addServerDialog()
-                end,
-            }},
-            {{
-                text = _("Cancel"),
-                callback = function() UIManager:close(dialog) end,
-            }},
-        },
-    }
-    suppressDialogContainerHolds(dialog)
-    UIManager:show(dialog)
+    if not self.plugin_menu_controller then return end
+    return self.plugin_menu_controller:showServerOnboarding()
 end
 
 function ProgressSyncDeluxe:showCredits()
-    local credits = "# Deluxe-Sync for KOReader\n\n"
-        .. "Version **" .. PLUGIN_VERSION .. "**\n\n"
-        .. "A multi-server KOSync companion for KOReader, built to synchronize reading progress across independent KOReader-compatible servers while keeping conflict review and server inspection reader-friendly.\n\n"
-        .. "## With appreciation\n\n"
-        .. "Deluxe-Sync builds on the open-source KOReader ecosystem and the KOSync protocol implemented by KOReader's built-in Progress Sync plugin.\n\n"
-        .. "- [KOReader](https://github.com/koreader/koreader) — the reader, plugin platform, widgets, network APIs, and KOSync implementation that make Deluxe-Sync possible.\n"
-        .. "- [BookOrbit](https://github.com/bookorbit/bookorbit) — a KOReader-compatible sync server used while validating interoperability, metadata-aware synchronization, and server-library behavior.\n\n"
-        .. "Many thanks to the authors and contributors who make these projects available to the community.\n\n"
-        .. "## Links & Support\n\n"
-        .. "- [Techy Notes](https://techy-notes.com) — blog, projects, notes, and guides.\n"
-        .. "- [Jadehawk on YouTube](https://youtube.com/@jadehawk) — project videos and tutorials.\n"
-        .. "- [Buy Me a Coffee](https://buymeacoffee.com/jadehawk) — if you would like to support my projects.\n"
-        .. "- [Deluxe-Sync on GitHub](https://github.com/jadehawk/deluxe-sync.koplugin) — source code, releases, and issue tracking.\n\n"
-        .. "Deluxe-Sync is an independent personal project and is not affiliated with KOReader, BookOrbit, or the services listed above."
-
-    local viewer = TextViewer:new{
-        title = _("Credits"),
-        text = credits,
-        text_format = "md",
-        justified = false,
-        add_default_buttons = true,
-    }
-    if viewer.box_widget then
-        local box_widget = viewer.box_widget
-        box_widget.html_link_tapped_callback = function(link)
-            local uri = link and (link.uri or link.link or link.href)
-            if type(uri) ~= "string" or not uri:match("^https?://") then return end
-            if type(Device.canOpenLink) == "function" and Device:canOpenLink() then
-                Device:openLink(uri)
-            else
-                UIManager:show(InfoMessage:new{
-                    text = _("Open this link on another device:") .. "\n\n" .. uri,
-                })
-            end
-        end
-        box_widget.onTapText = function(widget, _arg, ges)
-            local pos = widget:getPosFromAbsPos(ges.pos)
-            if not pos then return end
-            local link = widget:getLinkByPosition(pos)
-            if link then
-                widget.html_link_tapped_callback(link)
-                return true
-            end
-        end
-    end
-    UIManager:show(viewer)
+    if not self.plugin_menu_controller then return end
+    return self.plugin_menu_controller:showCredits()
 end
 
 function ProgressSyncDeluxe:addToMainMenu(menu_items)
-    local sub_items = {}
-    local function strategyName(value)
-        if value == "silent" then return _("Silently") end
-        if value == "never" then return _("Never") end
-        return _("Prompt")
-    end
-    local function strategyChoices(setting_name)
-        return {
-            {
-                text = _("Silently"),
-                checked_func = function() return self.store and self.store.data.settings[setting_name] == "silent" end,
-                callback = function() self.store.data.settings[setting_name] = "silent"; self.store:flush() end,
-            },
-            {
-                text = _("Prompt"),
-                checked_func = function() return self.store and self.store.data.settings[setting_name] == "prompt" end,
-                callback = function() self.store.data.settings[setting_name] = "prompt"; self.store:flush() end,
-            },
-            {
-                text = _("Never"),
-                checked_func = function() return self.store and self.store.data.settings[setting_name] == "never" end,
-                callback = function() self.store.data.settings[setting_name] = "never"; self.store:flush() end,
-            },
-        }
-    end
-
-    if self.init_error then
-        table.insert(sub_items, {
-            text = _("Initialization error"),
-            callback = function()
-                UIManager:show(InfoMessage:new{
-                    text = T(_("Deluxe-Sync failed to initialize:\n\n%1"), self.init_error),
-                })
-            end,
-        })
-    end
-
-    table.insert(sub_items, {
-        text = _("Sync Behavior"),
-        enabled_func = function() return self.store ~= nil end,
-        sub_item_table = {
-            {
-                text_func = function()
-                    return T(_("Sync to newer state (%1)"), strategyName(self.store and self.store.data.settings.sync_forward))
-                end,
-                sub_item_table = strategyChoices("sync_forward"),
-            },
-            {
-                text_func = function()
-                    return T(_("Sync to older state (%1)"), strategyName(self.store and self.store.data.settings.sync_backward))
-                end,
-                sub_item_table = strategyChoices("sync_backward"),
-            },
-        },
-    })
-    table.insert(sub_items, {
-        text = _("Auto-Sync Documents"),
-        checked_func = function() return self.store ~= nil and self.store.data.settings.auto_sync == true end,
-        enabled_func = function() return self.store ~= nil end,
-        callback = function()
-            self.store.data.settings.auto_sync = self.store.data.settings.auto_sync ~= true
-            self.store:flush()
-        end,
-    })
-    table.insert(sub_items, {
-        text = _("Push progress to all"),
-        enabled_func = function()
-            return self:canManualSync()
-        end,
-        callback = function() self:pushAll(true) end,
-    })
-    table.insert(sub_items, {
-        text = _("Pull progress from all"),
-        enabled_func = function()
-            return self:canManualSync()
-        end,
-        callback = function() self:pullAll(true) end,
-    })
-    table.insert(sub_items, {
-        text_func = function()
-            local queued = self.queue and self.queue:count() or 0
-            return T(_("Queued updates (%1)"), queued)
-        end,
-        enabled_func = function() return self.queue ~= nil end,
-        callback = function() self:showQueuedUpdates() end,
-        separator = true,
-    })
-    table.insert(sub_items, {
-        text_func = function()
-            local enabled = self.store and #self.store:getEnabledServers() or 0
-            return T(_("Configured Servers (%1 enabled)"), enabled)
-        end,
-        enabled_func = function() return self.store ~= nil end,
-        callback = function() self:showServers() end,
-        separator = true,
-    })
-    table.insert(sub_items, {
-        text = _("Diagnostic logging"),
-        checked_func = function()
-            return self.store ~= nil and self.store.data.settings.logging_enabled ~= false
-        end,
-        enabled_func = function() return self.store ~= nil end,
-        callback = function()
-            local enabled = self.store.data.settings.logging_enabled == false
-            self.store.data.settings.logging_enabled = enabled
-            self.store:flush()
-            if not enabled then DiagnosticLog.log("diagnostic logging", "disabled") end
-            DiagnosticLog.configure(enabled)
-            if enabled then DiagnosticLog.log("diagnostic logging", "enabled") end
-        end,
-    })
-    table.insert(sub_items, {
-        text = _("Check for Updates"),
-        enabled_func = function() return self.store ~= nil end,
-        callback = function() require("deluxe_sync_updater").check(self, true) end,
-        separator = true,
-    })
-    table.insert(sub_items, {
-        text = _("Credits"),
-        callback = function() self:showCredits() end,
-    })
-
-    menu_items.progress_sync_deluxe = {
-        text = _("Deluxe-Sync"),
-        sub_item_table_func = function()
-            if self.store and #self.store:listServers() == 0 then
-                self:showServerOnboarding()
-                return {}
-            end
-            return sub_items
-        end,
-    }
+    if not self.plugin_menu_controller then return end
+    return self.plugin_menu_controller:addToMainMenu(menu_items)
 end
 
 function ProgressSyncDeluxe:getDocumentDigest()
@@ -597,6 +459,243 @@ function ProgressSyncDeluxe:serverSupportsDeviceRegistration(server)
         and (tonumber(capabilities.device_registration_version) or 0) >= 1
 end
 
+function ProgressSyncDeluxe:serverSupportsAnnotations(server)
+    return self.enhanced_data_controller ~= nil
+        and self.enhanced_data_controller:serverSupportsAnnotations(server)
+end
+
+function ProgressSyncDeluxe:serverSupportsReadingStatistics(server)
+    return self.enhanced_data_controller ~= nil
+        and self.enhanced_data_controller:serverSupportsReadingStatistics(server)
+end
+
+function ProgressSyncDeluxe:cacheReadingStatisticsCapabilities(server, enhanced_capabilities)
+    if not self.enhanced_data_controller then return false end
+    return self.enhanced_data_controller:cacheReadingStatisticsCapabilities(server, enhanced_capabilities)
+end
+
+function ProgressSyncDeluxe:refreshReadingStatisticsCapabilities(server, client)
+    if not self.enhanced_data_controller then return false end
+    return self.enhanced_data_controller:refreshReadingStatisticsCapabilities(server, client)
+end
+
+function ProgressSyncDeluxe:serverSupportsVocabulary(server)
+    return self.enhanced_data_controller ~= nil
+        and self.enhanced_data_controller:serverSupportsVocabulary(server)
+end
+
+function ProgressSyncDeluxe:cacheVocabularyCapabilities(server, enhanced_capabilities)
+    if not self.enhanced_data_controller then return false end
+    return self.enhanced_data_controller:cacheVocabularyCapabilities(server, enhanced_capabilities)
+end
+
+function ProgressSyncDeluxe:serverSupportsSettingsBackups(server)
+    return self.enhanced_data_controller ~= nil
+        and self.enhanced_data_controller:serverSupportsSettingsBackups(server)
+end
+
+function ProgressSyncDeluxe:serverSupportsSettingsRestore(server)
+    return self.enhanced_data_controller ~= nil
+        and self.enhanced_data_controller:serverSupportsSettingsRestore(server)
+end
+
+function ProgressSyncDeluxe:serverSupportsDeluxeProfiles(server)
+    return self.enhanced_data_controller ~= nil
+        and self.enhanced_data_controller:serverSupportsDeluxeProfiles(server)
+end
+
+function ProgressSyncDeluxe:serverSupportsDeluxeProfileRestore(server)
+    return self.enhanced_data_controller ~= nil
+        and self.enhanced_data_controller:serverSupportsDeluxeProfileRestore(server)
+end
+
+function ProgressSyncDeluxe:cacheSettingsBackupCapabilities(server, enhanced_capabilities)
+    if not self.enhanced_data_controller then return false, false end
+    return self.enhanced_data_controller:cacheSettingsBackupCapabilities(server, enhanced_capabilities)
+end
+
+function ProgressSyncDeluxe:cacheDeluxeProfileCapabilities(server, enhanced_capabilities)
+    if not self.enhanced_data_controller then return false, false end
+    return self.enhanced_data_controller:cacheDeluxeProfileCapabilities(server, enhanced_capabilities)
+end
+
+function ProgressSyncDeluxe:refreshSettingsBackupCapabilities(server, client)
+    if not self.enhanced_data_controller then return false, false end
+    return self.enhanced_data_controller:refreshSettingsBackupCapabilities(server, client)
+end
+
+function ProgressSyncDeluxe:cacheEnhancedCapabilities(server, enhanced_capabilities)
+    if not self.enhanced_data_controller then return end
+    return self.enhanced_data_controller:cacheEnhancedCapabilities(server, enhanced_capabilities)
+end
+
+function ProgressSyncDeluxe:refreshEnhancedCapabilities(server, client)
+    if not self.enhanced_data_controller then return false, nil end
+    return self.enhanced_data_controller:refreshEnhancedCapabilities(server, client)
+end
+
+function ProgressSyncDeluxe:refreshEnhancedCapabilitiesAsync(server, client, callback)
+    if not self.enhanced_data_controller then
+        if callback then callback(false, nil) end
+        return
+    end
+    return self.enhanced_data_controller:refreshEnhancedCapabilitiesAsync(server, client, callback)
+end
+
+function ProgressSyncDeluxe:refreshEnhancedCapabilitiesForAll()
+    if not self.enhanced_data_controller then return end
+    return self.enhanced_data_controller:refreshEnhancedCapabilitiesForAll()
+end
+
+function ProgressSyncDeluxe:getOptionalDataDocuments()
+    if not self.enhanced_data_controller then return {} end
+    return self.enhanced_data_controller:getOptionalDataDocuments()
+end
+
+function ProgressSyncDeluxe:nudgeOptionalData(server, document, immediate)
+    if not self.enhanced_data_controller then return end
+    return self.enhanced_data_controller:nudgeOptionalData(server, document, immediate)
+end
+
+function ProgressSyncDeluxe:nudgeOptionalDataAll(immediate)
+    if not self.enhanced_data_controller then return end
+    return self.enhanced_data_controller:nudgeOptionalDataAll(immediate)
+end
+
+function ProgressSyncDeluxe:syncOptionalDataForServer(server, document, callback)
+    if not self.enhanced_data_controller then
+        if callback then callback(false) end
+        return
+    end
+    return self.enhanced_data_controller:syncOptionalDataForServer(server, document, callback)
+end
+
+function ProgressSyncDeluxe:syncVocabularyForServer(server, callback)
+    if not self.vocabulary_sync_service then
+        if callback then callback(false, nil, "Vocabulary Builder sync is unavailable") end
+        return
+    end
+    return self.vocabulary_sync_service:sync(server, callback)
+end
+
+function ProgressSyncDeluxe:syncReadingStatisticsForServer(server, callback)
+    if not self.reading_statistics_sync_service then
+        if callback then callback(false, nil, "Reading statistics sync is unavailable") end
+        return
+    end
+    return self.reading_statistics_sync_service:sync(server, callback)
+end
+
+function ProgressSyncDeluxe:syncReadingStatisticsForAll()
+    self:nudgeOptionalDataAll(false)
+end
+
+function ProgressSyncDeluxe:completeSettingsRestoreRequest(server, client, registration, request_id, status, message, callback)
+    if not self.restore_migration_controller then
+        if callback then callback(false, nil, "Settings restore controller unavailable") end
+        return
+    end
+    return self.restore_migration_controller:completeSettingsRestoreRequest(server, client, registration, request_id, status, message, callback)
+end
+
+function ProgressSyncDeluxe:showSettingsRestorePrompt(server, restore, client, registration)
+    if not self.restore_migration_controller then return false end
+    return self.restore_migration_controller:showSettingsRestorePrompt(server, restore, client, registration)
+end
+
+function ProgressSyncDeluxe:checkSettingsRestoreForServer(server, client, callback)
+    if not self.restore_migration_controller then
+        if callback then callback(false, nil, "Settings restore controller unavailable") end
+        return
+    end
+    return self.restore_migration_controller:checkSettingsRestoreForServer(server, client, callback)
+end
+
+function ProgressSyncDeluxe:completeDeluxeProfileRestoreRequest(server, client, registration, request_id, status, message, callback)
+    if not self.restore_migration_controller then
+        if callback then callback(false, nil, "Deluxe-Sync restore controller unavailable") end
+        return
+    end
+    return self.restore_migration_controller:completeDeluxeProfileRestoreRequest(server, client, registration, request_id, status, message, callback)
+end
+
+function ProgressSyncDeluxe:showDeluxeProfileRestorePrompt(server, restore, client, registration)
+    if not self.restore_migration_controller then return false end
+    return self.restore_migration_controller:showDeluxeProfileRestorePrompt(server, restore, client, registration)
+end
+
+function ProgressSyncDeluxe:checkDeluxeProfileRestoreForServer(server, client, callback)
+    if not self.restore_migration_controller then
+        if callback then callback(false, nil, "Deluxe-Sync restore controller unavailable", false) end
+        return
+    end
+    return self.restore_migration_controller:checkDeluxeProfileRestoreForServer(server, client, callback)
+end
+
+function ProgressSyncDeluxe:applyCurrentDeluxeProfileRestore(server, client, registration, expected_profile_id, callback)
+    if not self.restore_migration_controller then
+        if callback then callback(false, nil, _("Deluxe-Sync restore controller unavailable")) end
+        return
+    end
+    return self.restore_migration_controller:applyCurrentDeluxeProfileRestore(server, client, registration, expected_profile_id, callback)
+end
+
+function ProgressSyncDeluxe:showDeluxeProfileCandidatePrompt(server, candidate, client, registration)
+    if not self.restore_migration_controller then return false end
+    return self.restore_migration_controller:showDeluxeProfileCandidatePrompt(server, candidate, client, registration)
+end
+
+function ProgressSyncDeluxe:checkDeluxeProfileCandidateForServer(server, client, callback)
+    if not self.restore_migration_controller then
+        if callback then callback(false, nil, "Deluxe-Sync restore controller unavailable") end
+        return
+    end
+    return self.restore_migration_controller:checkDeluxeProfileCandidateForServer(server, client, callback)
+end
+
+function ProgressSyncDeluxe:checkDeluxeProfileMigrationForServer(server, client)
+    if not self.restore_migration_controller then return end
+    return self.restore_migration_controller:checkDeluxeProfileMigrationForServer(server, client)
+end
+
+function ProgressSyncDeluxe:syncSettingsBackupForServer(server, callback)
+    if not self.settings_backup_sync_service then
+        if callback then callback(false, nil, "Settings backup sync is unavailable") end
+        return
+    end
+    return self.settings_backup_sync_service:sync(server, callback)
+end
+
+function ProgressSyncDeluxe:syncDeluxeProfileBackupForServer(server, callback)
+    if not self.deluxe_profile_backup_sync_service then
+        if callback then callback(false, nil, "Deluxe-Sync config backup is unavailable") end
+        return
+    end
+    return self.deluxe_profile_backup_sync_service:sync(server, callback)
+end
+
+function ProgressSyncDeluxe:syncSettingsBackupsForAll()
+    self:nudgeOptionalDataAll(false)
+end
+
+function ProgressSyncDeluxe:getLocalAnnotations()
+    if not self.annotation_sync_service then return {} end
+    return self.annotation_sync_service:getLocalAnnotations()
+end
+
+function ProgressSyncDeluxe:persistLocalAnnotations(annotations)
+    if not self.annotation_sync_service then return end
+    return self.annotation_sync_service:persistLocalAnnotations(annotations)
+end
+
+function ProgressSyncDeluxe:syncAnnotationsForServer(server, document, callback)
+    if not self.annotation_sync_service then
+        if callback then callback(false, nil, "Annotation sync is unavailable") end
+        return
+    end
+    return self.annotation_sync_service:sync(server, document, callback)
+end
+
 function ProgressSyncDeluxe:getDeviceRegistrationPayload()
     local koreader_device_id
     if G_reader_settings and G_reader_settings.readSetting then
@@ -627,6 +726,11 @@ function ProgressSyncDeluxe:getDeviceRegistrationPayload()
             rich_progress = true,
             logical_books = true,
             device_registration = true,
+            annotations = true,
+            reading_statistics = true,
+            settings_backups = true,
+            deluxe_profiles = true,
+            deluxe_profile_restore = true,
         },
     }
 end
@@ -661,13 +765,25 @@ function ProgressSyncDeluxe:newClient(server)
     }
 end
 
+function ProgressSyncDeluxe:cancelQueueRetry()
+    if not self.progress_lifecycle_controller then return end
+    return self.progress_lifecycle_controller:cancelQueueRetry()
+end
+
+function ProgressSyncDeluxe:scheduleQueueRetry()
+    if not self.progress_lifecycle_controller then return end
+    return self.progress_lifecycle_controller:scheduleQueueRetry()
+end
+
 function ProgressSyncDeluxe:queueForServer(server, item)
     self.queue:push(item)
+    self:scheduleQueueRetry()
     local count = self.queue:count(server.id)
     if count < QUEUE_DISABLE_THRESHOLD then return false end
 
     self.store:setServerEnabled(server.id, false)
     self.queue:removeServer(server.id)
+    self:scheduleQueueRetry()
     if DiagnosticLog then DiagnosticLog.log("server auto disabled", serverLabel(server), "queued", count) end
     UIManager:show(InfoMessage:new{
         text = T(_("%1 automatically disabled after %2 queued updates."), serverLabel(server), QUEUE_DISABLE_THRESHOLD),
@@ -725,17 +841,22 @@ function ProgressSyncDeluxe:pushAll(interactive)
             if isBookNotFoundResponse(status, body) then
                 not_tracked = not_tracked + 1
                 self.queue:remove(server.id, document)
+                self:scheduleQueueRetry()
                 if DiagnosticLog then DiagnosticLog.log("push not tracked", serverLabel(server), "document", document, "status", status, "body", body) end
             elseif status == 401 then
                 failed = failed + 1
             else
                 queued = queued + 1
+                local now = os.time()
                 local auto_disabled = self:queueForServer(server, {
                     server_id = server.id,
                     document = document,
                     payload = failed_payload,
                     reason = queueFailureReason(status, body),
                     last_status = status,
+                    failure_count = 1,
+                    last_attempt_at = now,
+                    next_retry_at = now + QUEUE_RETRY_DELAYS[1],
                 })
                 if auto_disabled then
                     queued = queued - 1
@@ -750,10 +871,13 @@ function ProgressSyncDeluxe:pushAll(interactive)
                 if ok and (status == 200 or status == 202) then
                     success = success + 1
                     self.queue:remove(server.id, document)
+                    self:scheduleQueueRetry()
                     if is_metadata_probe then
                         self.store:setCapability(server.id, "metadata_compatible", true)
                     end
                     self:heartbeatDevice(server, nil, false)
+                    self:nudgeOptionalData(server, payload.document, false)
+
                     done()
                 elseif is_metadata_probe and (status == 400 or status == 404 or status == 422) then
                     if DiagnosticLog then DiagnosticLog.log("metadata fallback", serverLabel(server), "status", status, "body", body) end
@@ -834,7 +958,7 @@ function ProgressSyncDeluxe:showQueuedUpdates()
         actions = {
             { text = _("Retry Queued Updates"), callback = function(card)
                 UIManager:close(card)
-                self:retryQueue(true, function() self:showQueuedUpdates() end)
+                self:retryQueue(true, function() self:showQueuedUpdates() end, "manual")
             end },
             { text = _("Close") },
         }
@@ -842,70 +966,12 @@ function ProgressSyncDeluxe:showQueuedUpdates()
     self:showStatusCard(_("Queued Updates"), rows, actions)
 end
 
-function ProgressSyncDeluxe:retryQueue(interactive, complete_callback)
-    local stale_server_ids = {}
-    for unused_index, item in ipairs(self.queue:list()) do
-        local server = self.store:getServer(item.server_id)
-        if not server or server.enabled == false then stale_server_ids[item.server_id] = true end
-    end
-    for server_id in pairs(stale_server_ids) do
-        self.queue:removeServer(server_id)
-        if DiagnosticLog then DiagnosticLog.log("queue cleanup", "server", server_id, "reason", "missing or disabled") end
-    end
-
-    local items = self.queue:list()
-    if #items == 0 then
-        if interactive then UIManager:show(InfoMessage:new{ text = _("No queued progress updates.") }) end
+function ProgressSyncDeluxe:retryQueue(interactive, complete_callback, retry_mode)
+    if not self.progress_lifecycle_controller then
         if complete_callback then complete_callback() end
         return
     end
-
-    local pending = 0
-    local scan_complete = false
-    local function done()
-        pending = pending - 1
-        if scan_complete and pending == 0 and complete_callback then complete_callback() end
-    end
-
-    for unused_index, item in ipairs(items) do
-        local server = self.store:getServer(item.server_id)
-        if server and server.enabled ~= false then
-            pending = pending + 1
-            local payload = item.payload
-            local strip_metadata = payload.metadata ~= nil
-                and (server.metadata_enabled == false or (server.capabilities and server.capabilities.metadata_compatible == false))
-            local strip_position = payload.position ~= nil and not self:serverSupportsRichProgress(server)
-            if strip_metadata or strip_position then
-                local sanitized = {
-                    document = payload.document,
-                    progress = payload.progress,
-                    percentage = payload.percentage,
-                    device = payload.device,
-                    device_id = payload.device_id,
-                }
-                if not strip_metadata then sanitized.metadata = payload.metadata end
-                if not strip_position then sanitized.position = payload.position end
-                payload = sanitized
-                item.payload = payload
-                self.queue:save()
-            end
-            self:newClient(server):updateProgress(server.username, server.userkey, payload, function(ok, status, body)
-                if ok and (status == 200 or status == 202) then
-                    self.queue:remove(item.server_id, item.document)
-                    self:heartbeatDevice(server, nil, false)
-                elseif isBookNotFoundResponse(status, body) then
-                    self.queue:remove(item.server_id, item.document)
-                    if DiagnosticLog then DiagnosticLog.log("queue drop not tracked", serverLabel(server), "document", item.document, "status", status, "body", body) end
-                else
-                    self.queue:updateFailure(item.server_id, item.document, status, queueFailureReason(status, body))
-                end
-                done()
-            end)
-        end
-    end
-    scan_complete = true
-    if pending == 0 and complete_callback then complete_callback() end
-    if interactive then UIManager:show(InfoMessage:new{ text = _("Queued updates are being retried.") }) end
+    return self.progress_lifecycle_controller:retryQueue(interactive, complete_callback, retry_mode)
 end
 
 function ProgressSyncDeluxe:handleAutomaticPull(results)
@@ -1008,6 +1074,7 @@ function ProgressSyncDeluxe:pullAll(interactive)
         self:newClient(server):getProgress(server.username, server.userkey, request.document, function(ok, status, body)
             local data = decode(body) or {}
             local has_remote_record = status == 200 and (data.progress ~= nil or data.percentage ~= nil or data.timestamp ~= nil)
+            if ok and status == 200 then self:nudgeOptionalData(server, request.document, false) end
             if DiagnosticLog then
                 DiagnosticLog.log(
                     "pull result",
@@ -1108,12 +1175,7 @@ function ProgressSyncDeluxe:showPullResults(results)
             ImageWidget:new{ image = thumbnail, width = cover_width, height = cover_height },
         })
     else
-        table.insert(left_column, TextBoxWidget:new{
-            text = _("Cover unavailable"),
-            width = left_width,
-            face = detail_face,
-            alignment = "center",
-        })
+        table.insert(left_column, DeluxeCoverPlaceholder.centered(cover_max_width, cover_max_height, { border = 1 }))
     end
     table.insert(left_column, VerticalSpan:new{ width = 4 })
     table.insert(left_column, TextBoxWidget:new{
@@ -1435,12 +1497,7 @@ function ProgressSyncDeluxe:showPreviewControls()
             ImageWidget:new{ image = thumbnail, width = cover_width, height = cover_height },
         })
     else
-        table.insert(left_column, TextBoxWidget:new{
-            text = _("Cover unavailable"),
-            width = left_width,
-            face = detail_face,
-            alignment = "center",
-        })
+        table.insert(left_column, DeluxeCoverPlaceholder.centered(cover_max_width, cover_max_height, { border = 1 }))
     end
 
     table.insert(left_column, VerticalSpan:new{ width = 3 })
@@ -1648,12 +1705,7 @@ function ProgressSyncDeluxe:showPreviewDecision()
             ImageWidget:new{ image = thumbnail, width = cover_width, height = cover_height },
         })
     else
-        table.insert(left_column, TextBoxWidget:new{
-            text = _("Cover unavailable"),
-            width = left_width,
-            face = detail_face,
-            alignment = "center",
-        })
+        table.insert(left_column, DeluxeCoverPlaceholder.centered(cover_max_width, cover_max_height, { border = 1 }))
     end
 
     table.insert(left_column, VerticalSpan:new{ width = 4 })
@@ -1876,381 +1928,337 @@ function ProgressSyncDeluxe:acceptPreviewAndSyncAll()
     })
 end
 
-function ProgressSyncDeluxe:showServers(state)
-    state = state or {}
-    if not state.enabled then
-        state.enabled = {}
-        for _, server in ipairs(self.store:listServers()) do
-            state.enabled[server.id] = server.enabled ~= false
-        end
+function ProgressSyncDeluxe:serverFromSettingsDraft(draft, password, require_password)
+    draft = draft or {}
+    local name = util.trim(draft.name or "")
+    local url = util.trim(draft.url or "")
+    local username = util.trim(draft.username or "")
+    local email = util.trim(draft.email or "")
+    password = password or ""
+    if url == "" or username == "" or (require_password and password == "" and not draft.userkey) then
+        UIManager:show(InfoMessage:new{ text = _("Server URL, username, and password are required.") })
+        return nil
     end
-    state.query = state.query or ""
-
-    local function matches(server)
-        return state.query == "" or serverLabel(server):lower():find(state.query:lower(), 1, true) ~= nil
+    local normalized_url, url_error = UrlUtil.normalize(url)
+    if not normalized_url then
+        UIManager:show(InfoMessage:new{ text = url_error or _("Server URL is invalid.") })
+        return nil
     end
-
-    local server_scroll
-    local function reopen(preserve_scroll)
-        if preserve_scroll and server_scroll then
-            state.scroll_offset = server_scroll:getScrolledOffset()
-        else
-            state.scroll_offset = nil
-        end
-        UIManager:close(self.servers_dialog)
-        UIManager:nextTick(function() self:showServers(state) end)
+    local key = password ~= "" and userkey(password) or draft.userkey
+    if not key then
+        UIManager:show(InfoMessage:new{ text = _("Password is required.") })
+        return nil
     end
-
-    self.servers_dialog = ButtonDialog:new{
-        title = _("Deluxe-Sync"),
-        title_align = "left",
-        width = math.floor(Device.screen:getWidth() * 0.92),
-        buttons = {{
-            { text = _("Cancel"), callback = function() UIManager:close(self.servers_dialog) end },
-            {
-                text = _("✓  OK"),
-                callback = function()
-                    for _, server in ipairs(self.store:listServers()) do
-                        self.store:setServerEnabled(server.id, state.enabled[server.id] == true)
-                    end
-                    UIManager:close(self.servers_dialog)
-                end,
-            },
-        }},
+    return {
+        id = draft.id,
+        name = name ~= "" and name or normalized_url,
+        url = normalized_url,
+        username = username,
+        email = email ~= "" and email or nil,
+        userkey = key,
+        enabled = draft.enabled ~= false,
+        metadata_enabled = draft.metadata_enabled ~= false,
+        data_sharing_version = ServerStore.DATA_SHARING_VERSION,
+        annotations_enabled = draft.annotations_enabled == true,
+        reading_statistics_enabled = draft.reading_statistics_enabled == true,
+        settings_backup_enabled = draft.settings_backup_enabled == true,
+        deluxe_config_backup_enabled = draft.deluxe_config_backup_enabled == true,
+        vocabulary_enabled = draft.vocabulary_enabled == true,
+        vocabulary_context_enabled = draft.vocabulary_enabled == true and draft.vocabulary_context_enabled == true,
+        checksum_method = draft.checksum_method == "filename" and "filename" or "binary",
+        capabilities = util.tableDeepCopy(draft.capabilities or {}),
     }
-
-    local body_width = self.servers_dialog:getAddedWidgetAvailableWidth()
-    local scrollbar_width = ScrollableContainer:getScrollbarWidth()
-    local grid_width = math.max(1, body_width - scrollbar_width)
-    local title_face = Font:getFace("smallinfofont", 14)
-
-    local selected, available = {}, {}
-    for _, server in ipairs(self.store:listServers()) do
-        if matches(server) then
-            table.insert(state.enabled[server.id] and selected or available, server)
-        end
-    end
-
-    local grid_rows = {}
-    local function addSection(title, servers, enabled)
-        table.insert(grid_rows, {{
-            text = title,
-            enabled = false,
-            align = "left",
-            bordersize = 0,
-            text_font_face = "smallinfofont",
-            text_font_size = 15,
-            text_font_bold = true,
-        }})
-        if #servers == 0 then
-            table.insert(grid_rows, {{
-                text = _("No matching servers"),
-                enabled = false,
-                align = "left",
-                radius = math.max(7, Device.screen:scaleBySize(7)),
-                text_font_face = "smallinfofont",
-                text_font_size = 15,
-                text_font_bold = false,
-            }})
-            return
-        end
-        local row = {}
-        for _, server in ipairs(servers) do
-            local selected_server = server
-            table.insert(row, {
-                text = (enabled and "●  " or "○  ") .. serverLabel(selected_server),
-                align = "left",
-                radius = math.max(8, Device.screen:scaleBySize(8)),
-                padding_h = math.max(7, Device.screen:scaleBySize(7)),
-                padding_v = math.max(8, Device.screen:scaleBySize(8)),
-                text_font_face = "smallinfofont",
-                text_font_size = 16,
-                text_font_bold = true,
-                callback = function()
-                    state.enabled[selected_server.id] = not enabled
-                    reopen(true)
-                end,
-                hold_callback = function()
-                    UIManager:close(self.servers_dialog)
-                    self:showServer(selected_server)
-                end,
-            })
-            if #row == 2 then
-                table.insert(grid_rows, row)
-                row = {}
-            end
-        end
-        if #row > 0 then
-            table.insert(grid_rows, row)
-        end
-    end
-
-    addSection(T(_("SELECTED (%1)"), #selected), selected, true)
-    addSection(T(_("AVAILABLE SERVERS (%1)"), #available), available, false)
-
-    local server_grid = ButtonTable:new{
-        buttons = grid_rows,
-        width = grid_width,
-        zero_sep = true,
-        show_parent = self.servers_dialog,
-    }
-
-    local body = VerticalGroup:new{ align = "left" }
-    table.insert(body, TextBoxWidget:new{
-        text = _("Select servers to use for sync:"),
-        width = body_width,
-        face = title_face,
-        alignment = "left",
-    })
-    table.insert(body, VerticalSpan:new{ width = 5 })
-
-    table.insert(body, ButtonTable:new{
-        buttons = {{ {
-            text = state.query ~= "" and T(_("Search: %1"), state.query) or _("⌕  Search servers…"),
-            align = "left",
-            radius = math.max(8, Device.screen:scaleBySize(8)),
-            text_font_face = "smallinfofont",
-            text_font_size = 16,
-            text_font_bold = true,
-            callback = function()
-                local search_dialog
-                search_dialog = MultiInputDialog:new{
-                    title = _("Deluxe-Sync"),
-                    title_align = "left",
-                    fields = {{ text = state.query, hint = _("Search servers…") }},
-                    buttons = {{
-                        { text = _("Cancel"), callback = function() UIManager:close(search_dialog) end },
-                        { text = _("Search"), callback = function()
-                            state.query = util.trim((search_dialog:getFields()[1]) or "")
-                            UIManager:close(search_dialog)
-                            reopen(false)
-                        end },
-                    }},
-                }
-                suppressDialogContainerHolds(search_dialog)
-                UIManager:show(search_dialog)
-                search_dialog:onShowKeyboard()
-            end,
-        } }},
-        width = body_width,
-        zero_sep = true,
-        show_parent = self.servers_dialog,
-    })
-    table.insert(body, VerticalSpan:new{ width = 8 })
-
-    table.insert(body, FrameContainer:new{
-        width = body_width,
-        bordersize = 0,
-        padding = 0,
-        (function()
-            server_scroll = FreeScrollableContainer:new{
-                dimen = Geom:new{ w = body_width, h = math.floor(Device.screen:getHeight() * 0.50) },
-                show_parent = self.servers_dialog,
-                server_grid,
-            }
-            return server_scroll
-        end)(),
-    })
-    table.insert(body, VerticalSpan:new{ width = 8 })
-    table.insert(body, TextBoxWidget:new{
-        text = _("Tap and hold a server for details and options."),
-        width = body_width,
-        face = title_face,
-        alignment = "left",
-    })
-    table.insert(body, VerticalSpan:new{ width = 8 })
-
-    table.insert(body, ButtonTable:new{
-        buttons = {{ {
-            text = _("+  Add server…"),
-            align = "center",
-            radius = math.max(8, Device.screen:scaleBySize(8)),
-            padding_h = math.max(10, Device.screen:scaleBySize(10)),
-            padding_v = math.max(10, Device.screen:scaleBySize(10)),
-            background = Blitbuffer.COLOR_LIGHT_GRAY,
-            text_font_face = "smallinfofont",
-            text_font_size = 16,
-            text_font_bold = true,
-            callback = function()
-                UIManager:close(self.servers_dialog)
-                self:addServerDialog()
-            end,
-        } }},
-        width = body_width,
-        zero_sep = true,
-        show_parent = self.servers_dialog,
-    })
-
-    self.servers_dialog:addWidget(body)
-    suppressDialogContainerHolds(self.servers_dialog)
-    UIManager:show(self.servers_dialog)
-    if state.scroll_offset and server_scroll then
-        local offset = state.scroll_offset
-        UIManager:nextTick(function()
-            if server_scroll then
-                server_scroll:setScrolledOffset(offset)
-                server_scroll:_scrollBy(0, 0)
-            end
-        end)
-    end
 end
 
-function ProgressSyncDeluxe:addServerDialog(existing)
-    existing = existing or {}
+function ProgressSyncDeluxe:showServers()
+    local ServersPage = require("ServersPage")
+    local page
+    page = ServersPage:new{
+        servers = self.store:listServers(),
+        label_fn = serverLabel,
+        plugin_version = PLUGIN_VERSION,
+        on_close = function(current)
+            self.servers_page = nil
+            UIManager:close(current)
+        end,
+        on_toggle = function(current, server, enabled)
+            self.store:setServerEnabled(server.id, enabled == true)
+            if enabled ~= true and self.queue then self.queue:removeServer(server.id) end
+        end,
+        on_browse = function(current)
+            local target
+            for server_index, server in ipairs(self.store:listServers()) do
+                local capabilities = server.capabilities or {}
+                if server.enabled ~= false and capabilities.document_listing == true then
+                    target = server
+                    break
+                end
+            end
+            if not target then
+                UIManager:show(InfoMessage:new{ text = _("No enabled server supports Synced Books.") })
+                return
+            end
+            self.servers_page = nil
+            UIManager:close(current)
+            self:showCachedServerLibrary(target)
+        end,
+        on_open_server = function(current, server)
+            self.servers_page = nil
+            UIManager:close(current)
+            self:showServer(server)
+        end,
+        on_add = function(current)
+            self.servers_page = nil
+            UIManager:close(current)
+            self:addServerDialog()
+        end,
+    }
+    self.servers_page = page
+    UIManager:show(page)
+end
+
+function ProgressSyncDeluxe:showDataSharingDialog(server, on_save, on_cancel)
+    server = server or {}
+    local values = {
+        metadata_enabled = server.metadata_enabled ~= false,
+        annotations_enabled = server.annotations_enabled == true,
+        reading_statistics_enabled = server.reading_statistics_enabled == true,
+        settings_backup_enabled = server.settings_backup_enabled == true,
+        deluxe_config_backup_enabled = server.deluxe_config_backup_enabled == true,
+        vocabulary_enabled = server.vocabulary_enabled == true,
+        vocabulary_context_enabled = server.vocabulary_enabled == true and server.vocabulary_context_enabled == true,
+    }
     local dialog
-    local metadata_enabled = existing.metadata_enabled ~= false
-    local checksum_method = existing.checksum_method == "filename" and "filename" or "binary"
-
-    local function collectServer(require_password)
-        local values = dialog:getFields()
-        local name = util.trim(values[1] or "")
-        local url = util.trim(values[2] or "")
-        local username = util.trim(values[3] or "")
-        local password = values[4] or ""
-        local email = util.trim(values[5] or "")
-        if url == "" or username == "" or (require_password and password == "" and not existing.userkey) then
+    local labels = {
+        { id = "metadata_sharing", field = "metadata_enabled", label = _("Book Metadata") },
+        { id = "annotation_sharing", field = "annotations_enabled", label = _("Annotations / Highlights / Notes") },
+        { id = "statistics_sharing", field = "reading_statistics_enabled", label = _("Reading Statistics") },
+        { id = "settings_sharing", field = "settings_backup_enabled", label = _("KOReader Settings Backup") },
+        { id = "config_sharing", field = "deluxe_config_backup_enabled", label = _("Deluxe-Sync Config Backup") },
+        { id = "vocabulary_sharing", field = "vocabulary_enabled", label = _("Vocabulary Builder") },
+        { id = "vocabulary_context_sharing", field = "vocabulary_context_enabled", label = _("Vocabulary Reading Context") },
+    }
+    local function buttonText(item)
+        return T(_("%1: %2"), item.label, values[item.field] and _("On") or _("Off"))
+    end
+    local function toggle(item)
+        if item.field == "vocabulary_context_enabled" and not values.vocabulary_enabled then
+            UIManager:show(InfoMessage:new{ text = _("Enable Vocabulary Builder before sharing reading context.") })
+            return
+        end
+        values[item.field] = not values[item.field]
+        if item.field == "vocabulary_enabled" and not values.vocabulary_enabled then
+            values.vocabulary_context_enabled = false
+            local context_button = dialog:getButtonById("vocabulary_context_sharing")
+            if context_button then
+                local context_item = labels[#labels]
+                context_button:setText(buttonText(context_item), context_button.width)
+            end
+        end
+        local button = dialog:getButtonById(item.id)
+        if button then button:setText(buttonText(item), button.width) end
+        UIManager:setDirty(dialog, "ui")
+        if item.field == "deluxe_config_backup_enabled" and values[item.field] then
             UIManager:show(InfoMessage:new{
-                text = _("Server URL, username, and password are required."),
+                text = _("Deluxe-Sync Config Backup includes your configured server URLs, usernames, and saved authentication keys. Enable it only for a server you trust to hold your complete Deluxe-Sync setup."),
             })
-            return
+        elseif item.field == "vocabulary_context_enabled" and values[item.field] then
+            UIManager:show(InfoMessage:new{
+                text = _("Vocabulary Reading Context can include surrounding book passages and highlighted text. Enable it only if you want those excerpts stored on this server."),
+            })
         end
-        local normalized_url, url_error = UrlUtil.normalize(url)
-        if not normalized_url then
-            UIManager:show(InfoMessage:new{ text = url_error or _("Server URL is invalid.") })
-            return
-        end
-        url = normalized_url
-
-        local key = password ~= "" and userkey(password) or existing.userkey
-        if not key then
-            UIManager:show(InfoMessage:new{ text = _("Password is required.") })
-            return
-        end
-        -- metadata_enabled is controlled by the compact server option button.
-        -- checksum_method is controlled by the compact server option button.
-        local capabilities = existing.capabilities
-        if metadata_enabled and existing.metadata_enabled == false and capabilities then
-            capabilities.metadata_compatible = nil
-        end
-        return {
-            id = existing.id,
-            name = name ~= "" and name or url,
-            url = url,
-            username = username,
-            email = email ~= "" and email or nil,
-            userkey = key,
-            enabled = existing.enabled ~= false,
-            metadata_enabled = metadata_enabled,
-            checksum_method = checksum_method,
-            capabilities = capabilities,
-        }
     end
 
-    local function collectRecoverySeed()
-        local values = dialog:getFields()
-        return {
-            id = existing.id,
-            name = util.trim(values[1] or ""),
-            url = util.trim(values[2] or ""),
-            username = util.trim(values[3] or ""),
-            email = util.trim(values[5] or ""),
-            userkey = existing.userkey,
-            enabled = existing.enabled ~= false,
-            metadata_enabled = metadata_enabled,
-            checksum_method = checksum_method,
-            capabilities = existing.capabilities,
-        }
+    local rows = {
+        {{
+            text = _("Reading Progress: On (required)"),
+            callback = function()
+                UIManager:show(InfoMessage:new{ text = _("Reading progress is the core Deluxe-Sync service and is always shared with an enabled server.") })
+            end,
+        }},
+    }
+    for _, item in ipairs(labels) do
+        local current = item
+        rows[#rows + 1] = {{
+            id = current.id,
+            text = buttonText(current),
+            callback = function() toggle(current) end,
+        }}
     end
-
-    local buttons = {
+    rows[#rows + 1] = {
         {
-            text = existing.id and _("Back to server details") or _("Cancel"),
+            text = _("Cancel"),
             callback = function()
                 UIManager:close(dialog)
-                if existing.id then
-                    self:showServer(self.store:getServer(existing.id) or existing)
-                else
-                    self:showServers()
-                end
+                if on_cancel then on_cancel() end
+            end,
+        },
+        {
+            text = _("Save"),
+            is_enter_default = true,
+            callback = function()
+                for field, value in pairs(values) do server[field] = value end
+                server.data_sharing_version = ServerStore.DATA_SHARING_VERSION
+                UIManager:close(dialog)
+                if on_save then on_save(server) end
             end,
         },
     }
-    if not existing.id then
-        table.insert(buttons, {
-            text = _("Sign up"),
-            callback = function()
-                local server = collectServer(true)
-                if not server then return end
-                UIManager:close(dialog)
-                self:registerServerAccount(server)
-            end,
-        })
-    end
-    table.insert(buttons, {
-        text = existing.id and _("Save / sign in") or _("Sign in / save"),
-        is_enter_default = true,
-        callback = function()
-            local server = collectServer(not existing.id)
-            if not server then return end
-            self.store:upsertServer(server)
-            UIManager:close(dialog)
-            self:testServer(server)
-        end,
-    })
 
-    local function metadataToggleText()
-        return T(_("Metadata: %1"), metadata_enabled and _("On") or _("Off"))
-    end
-    local function matchingToggleText()
-        return T(_("Match: %1"), checksum_method == "filename" and _("Filename") or _("Binary"))
-    end
+    dialog = ButtonDialog:new{
+        title = T(_("Data shared with %1"), serverLabel(server)),
+        title_align = "left",
+        buttons = rows,
+    }
+    suppressDialogContainerHolds(dialog)
+    UIManager:show(dialog)
+end
 
-    dialog = MultiInputDialog:new{
-        title = _("Deluxe-Sync"),
-        fields = {
-            { text = existing.name or "", hint = _("Server name") },
-            { text = existing.url or "", hint = _("URL (http:// or https://; defaults to https://)") },
-            { text = existing.username or "", hint = _("Username") },
-            { text = "", hint = existing.userkey and _("Password (leave blank to keep current)") or _("Password"), text_type = "password" },
-            { text = existing.email or "", hint = _("Email (optional, for account recovery)") },
-        },
+function ProgressSyncDeluxe:showDataSharingReview()
+    if self.data_sharing_review_shown or not self.store then return end
+    local pending = self.store:getServersNeedingDataSharingReview()
+    if #pending == 0 then return end
+    self.data_sharing_review_shown = true
+    local server = pending[1]
+    local dialog
+    dialog = ButtonDialog:new{
+        title = T(_("Review data sharing (%1 remaining)"), #pending),
+        title_align = "left",
         buttons = {
-            buttons,
-            {
-                {
-                    text = _("Recovery"),
-                    callback = function()
-                        local seed = collectRecoverySeed()
-                        UIManager:close(dialog)
-                        self:showRecoveryDialog(seed)
-                    end,
-                },
-                {
-                    id = "metadata_toggle",
-                    text = metadataToggleText(),
-                    callback = function()
-                        metadata_enabled = not metadata_enabled
-                        local button = dialog.button_table:getButtonById("metadata_toggle")
-                        if button then button:setText(metadataToggleText(), button.width) end
-                        UIManager:setDirty(dialog, "ui")
-                    end,
-                },
-                {
-                    id = "matching_toggle",
-                    text = matchingToggleText(),
-                    callback = function()
-                        checksum_method = checksum_method == "filename" and "binary" or "filename"
-                        local button = dialog.button_table:getButtonById("matching_toggle")
-                        if button then button:setText(matchingToggleText(), button.width) end
-                        UIManager:setDirty(dialog, "ui")
-                    end,
-                },
-            },
+            {{
+                text = T(_("Review %1"), serverLabel(server)),
+                callback = function()
+                    UIManager:close(dialog)
+                    self:showDataSharingDialog(server, function(updated)
+                        self.store:upsertServer(updated)
+                        self.data_sharing_review_shown = false
+                        local remaining = self.store:getServersNeedingDataSharingReview()
+                        local message
+                        if #remaining > 0 then
+                            message = T(_("Saved for %1. Servers remaining to review: %2."), serverLabel(updated), #remaining)
+                        else
+                            message = T(_("Saved for %1. Data-sharing review is complete."), serverLabel(updated))
+                        end
+                        UIManager:show(InfoMessage:new{ text = message, timeout = 1.5 })
+                        if #remaining > 0 then
+                            UIManager:scheduleIn(1.6, function() self:showDataSharingReview() end)
+                        end
+                    end, function()
+                        self.data_sharing_review_shown = false
+                    end)
+                end,
+            }},
+            {{
+                text = _("Later"),
+                callback = function()
+                    UIManager:close(dialog)
+                    self.data_sharing_review_shown = false
+                end,
+            }},
         },
     }
     suppressDialogContainerHolds(dialog)
     UIManager:show(dialog)
-    dialog:onShowKeyboard()
+end
+
+function ProgressSyncDeluxe:showServerSettingsPage(existing)
+    existing = existing or {}
+    local ServerSettingsPage = require("ServerSettingsPage")
+    local page
+
+    local function closePage()
+        if page then
+            self.server_settings_page = nil
+            UIManager:close(page)
+        end
+    end
+
+    local function requireSaved()
+        if page and page.dirty then
+            UIManager:show(InfoMessage:new{ text = _("Save your changes before using this action.") })
+            return false
+        end
+        return true
+    end
+
+    local function saveDraft(draft, password, require_password)
+        local server = self:serverFromSettingsDraft(draft, password, require_password)
+        if not server then return nil end
+        return self.store:upsertServer(server)
+    end
+
+    page = ServerSettingsPage:new{
+        server = existing,
+        is_new = existing.id == nil,
+        label_fn = serverLabel,
+        on_back = function()
+            closePage()
+            self:showServers()
+        end,
+        on_save = function(current, draft, password)
+            local saved = saveDraft(draft, password, draft.id == nil)
+            if not saved then return end
+            current:applySavedServer(saved)
+            UIManager:show(InfoMessage:new{ text = _("Saved."), timeout = 1.2 })
+            self:testServer(saved, {
+                show_result = false,
+                on_complete = function(updated)
+                    if self.server_settings_page == current then current:applySavedServer(updated or saved) end
+                end,
+            })
+        end,
+        on_signup = function(current, draft, password)
+            local server = self:serverFromSettingsDraft(draft, password, true)
+            if not server then return end
+            current.dirty = false
+            closePage()
+            self:registerServerAccount(server)
+        end,
+        on_authenticate = function(current, draft, password)
+            local candidate = self:serverFromSettingsDraft(draft, password, false)
+            if not candidate then return end
+            if DiagnosticLog then DiagnosticLog.log("ui action", "Authenticate / Sign in", "server", serverLabel(candidate)) end
+            self:testServer(candidate, {
+                show_result = false,
+                on_authorized = function(authenticated)
+                    local saved = self.store:upsertServer(authenticated)
+                    if self.server_settings_page == current then current:applySavedServer(saved) end
+                    return saved
+                end,
+                on_complete = function(updated)
+                    if self.server_settings_page == current then
+                        current:applySavedServer(updated or self.store:getServer(candidate.id) or candidate)
+                        UIManager:show(InfoMessage:new{ text = _("Signed in. Settings saved and capabilities refreshed."), timeout = 2 })
+                    end
+                end,
+            })
+        end,
+        on_recovery = function(_, draft)
+            if not requireSaved() then return end
+            local saved = self.store:getServer(draft.id) or existing
+            closePage()
+            self:showRecoveryDialog(saved)
+        end,
+        on_delete = function(_, draft)
+            UIManager:show(ConfirmBox:new{
+                text = T(_("Delete %1 from Deluxe-Sync?\nThis cannot be undone."), serverLabel(draft)),
+                cancel_text = _("Cancel"),
+                ok_text = _("Delete"),
+                ok_callback = function()
+                    closePage()
+                    if self.queue then self.queue:removeServer(draft.id) end
+                    self.store:removeServer(draft.id)
+                    self:showServers()
+                end,
+            })
+        end,
+    }
+    self.server_settings_page = page
+    UIManager:show(page)
+end
+
+function ProgressSyncDeluxe:addServerDialog(existing)
+    self:showServerSettingsPage(existing or {})
 end
 
 function ProgressSyncDeluxe:showRecoveryDialog(existing)
@@ -2562,7 +2570,7 @@ function ProgressSyncDeluxe:showStatusCard(title, rows, actions)
     return dialog
 end
 
-function ProgressSyncDeluxe:showServerTestResult(server, listing_supported, book_count, recovery_supported, logical_supported, rich_supported, device_supported, device_registered)
+function ProgressSyncDeluxe:showServerTestResult(server, listing_supported, book_count, recovery_supported, logical_supported, rich_supported, device_supported, device_registered, annotation_supported, reading_statistics_supported, settings_backup_supported, vocabulary_supported)
     local listing_value = listing_supported
         and T(_("Supported (%1 Books)"), book_count or 0)
         or _("Not Supported")
@@ -2576,10 +2584,15 @@ function ProgressSyncDeluxe:showServerTestResult(server, listing_supported, book
         { label = _("Linked Books"), value = logical_supported and _("Supported") or _("Not Supported") },
         { label = _("Rich Position"), value = rich_supported and _("Supported") or _("Not Supported") },
         { label = _("Device Identity"), value = device_value },
+        { label = _("Annotations"), value = annotation_supported and _("Supported") or _("Not Supported") },
+        { label = _("Reading Statistics"), value = reading_statistics_supported and _("Supported") or _("Not Supported") },
+        { label = _("Settings Backups"), value = settings_backup_supported and _("Supported") or _("Not Supported") },
+        { label = _("Vocabulary Builder"), value = vocabulary_supported and _("Supported") or _("Not Supported") },
     })
 end
 
-function ProgressSyncDeluxe:testServer(server)
+function ProgressSyncDeluxe:testServer(server, options)
+    options = options or {}
     local client = self:newClient(server)
     local ok, status, body = client:authorize(server.username, server.userkey)
     if not ok then
@@ -2587,6 +2600,11 @@ function ProgressSyncDeluxe:testServer(server)
         local message = userFacingServerFailure(status, body)
         self:showServerFailureDialog(server, title, message, status)
         return
+    end
+    if options.on_authorized then
+        local authorized_server = options.on_authorized(server)
+        if not authorized_server then return end
+        server = authorized_server
     end
     local recovery_ok, recovery_status, recovery_body = client:recoveryCapability()
     local recovery_data = decode(recovery_body)
@@ -2605,12 +2623,21 @@ function ProgressSyncDeluxe:testServer(server)
     local device_supported = type(enhanced_capabilities) == "table"
         and enhanced_capabilities.device_registration == true
         and (device_registration_version or 0) >= 1
+    local annotation_version = type(enhanced_capabilities) == "table" and tonumber(enhanced_capabilities.annotations_version) or nil
+    local annotation_supported = type(enhanced_capabilities) == "table"
+        and enhanced_capabilities.annotations == true
+        and (annotation_version or 0) >= 1
+    local reading_statistics_supported = self:cacheReadingStatisticsCapabilities(server, enhanced_capabilities)
+    local vocabulary_supported = self:cacheVocabularyCapabilities(server, enhanced_capabilities)
+    local settings_backup_supported = self:cacheSettingsBackupCapabilities(server, enhanced_capabilities)
     self.store:setCapability(server.id, "logical_books", logical_supported)
     self.store:setCapability(server.id, "logical_library", logical_supported)
     self.store:setCapability(server.id, "rich_progress", rich_supported)
     self.store:setCapability(server.id, "rich_position_version", rich_position_version)
     self.store:setCapability(server.id, "device_registration", device_supported)
     self.store:setCapability(server.id, "device_registration_version", device_registration_version)
+    self.store:setCapability(server.id, "annotations", annotation_supported)
+    self.store:setCapability(server.id, "annotations_version", annotation_version)
     if recovery_supported and server.email and server.email ~= "" then
         local email_ok, email_status, email_body = client:setRecoveryEmail(server.username, server.userkey, server.email)
         DiagnosticLog.log("recovery email enrollment result", server.url or "", "username", server.username or "", "email", server.email, "status", email_status or "nil", "ok", email_ok, "body", email_body or "")
@@ -2619,13 +2646,18 @@ function ProgressSyncDeluxe:testServer(server)
     local function finishTest(device_registered)
         client:listDocuments(server.username, server.userkey, function(list_ok, list_status, body)
             local data = decode(body)
-            if list_ok and list_status == 200 and data and type(data.documents) == "table" then
+            local listing_supported = list_ok and list_status == 200 and data and type(data.documents) == "table"
+            local book_count = 0
+            if listing_supported then
+                book_count = #data.documents
                 self.store:setCapability(server.id, "document_listing", true)
-                self.store:setKnownDocuments(server.id, data.documents)
-                self:showServerTestResult(server, true, #data.documents, recovery_supported, logical_supported, rich_supported, device_supported, device_registered)
             else
                 self.store:setCapability(server.id, "document_listing", false)
-                self:showServerTestResult(server, false, 0, recovery_supported, logical_supported, rich_supported, device_supported, device_registered)
+            end
+            local updated = self.store:getServer(server.id) or server
+            if options.on_complete then options.on_complete(updated) end
+            if options.show_result ~= false then
+                self:showServerTestResult(updated, listing_supported, book_count, recovery_supported, logical_supported, rich_supported, device_supported, device_registered, annotation_supported, reading_statistics_supported, settings_backup_supported, vocabulary_supported)
             end
         end)
     end
@@ -2639,899 +2671,106 @@ function ProgressSyncDeluxe:testServer(server)
 end
 
 function ProgressSyncDeluxe:showServer(server)
-    local caps = server.capabilities or {}
-    local listing = caps.document_listing == true and _("Supported") or (caps.document_listing == false and _("Not supported") or _("Unknown"))
-    local recovery = caps.account_recovery == true and _("Supported") or (caps.account_recovery == false and _("Not supported") or _("Unknown"))
-    local logical = caps.logical_library == true and _("Supported") or (caps.logical_library == false and _("Not supported") or _("Unknown"))
-    local rich = caps.rich_progress == true and _("Supported") or (caps.rich_progress == false and _("Not supported") or _("Unknown"))
-    local device_identity = caps.device_registration == true
-        and (caps.device_registered == true and _("Registered") or _("Supported"))
-        or (caps.device_registration == false and _("Not supported") or _("Unknown"))
-    local matching = server.checksum_method == "filename" and _("Filename") or _("Binary")
-    local enabled = server.enabled ~= false
-    local buttons = {
-        {{ text = _("Refresh / Test Capabilities"), callback = function() UIManager:close(self.server_dialog); self:testServer(server) end }},
-        {{ text = _("Browse Tracked Books"), callback = function() UIManager:close(self.server_dialog); self:refreshServerLibrary(server) end }},
-        {{ text = _("Account Recovery"), callback = function() UIManager:close(self.server_dialog); self:showRecoveryDialog(server) end }},
-        {{ text = _("Edit Server"), callback = function() UIManager:close(self.server_dialog); self:addServerDialog(server) end }},
-        {{ text = enabled and _("Disable Server") or _("Enable Server"), callback = function()
-            local new_enabled = not enabled
-            self.store:setServerEnabled(server.id, new_enabled)
-            if not new_enabled and self.queue then self.queue:removeServer(server.id) end
-            UIManager:close(self.server_dialog)
-            self:showServer(self.store:getServer(server.id))
-        end }},
-        {{ text = _("Delete Server"), callback = function()
-            local confirm_dialog
-            confirm_dialog = ButtonDialog:new{
-                title = _("Delete server?"),
-                title_align = "left",
-                buttons = {
-                    {{ text = T(_("Delete %1 from Deluxe-Sync? This cannot be undone."), serverLabel(server)), enabled = false }},
-                    {
-                        { text = _("Cancel"), callback = function() UIManager:close(confirm_dialog) end },
-                        { text = _("Delete"), callback = function()
-                            UIManager:close(confirm_dialog)
-                            UIManager:close(self.server_dialog)
-                            if self.queue then self.queue:removeServer(server.id) end
-                            self.store:removeServer(server.id)
-                            self:showServers()
-                        end },
-                    },
-                },
-            }
-            suppressDialogContainerHolds(confirm_dialog)
-            UIManager:show(confirm_dialog)
-        end }},
-        {{ text = _("Back to Server List"), callback = function() UIManager:close(self.server_dialog); self:showServers() end }},
-    }
-
-    self.server_dialog = ButtonDialog:new{
-        title = _("Deluxe-Sync"),
-        title_align = "left",
-        buttons = buttons,
-    }
-
-    local available_width = self.server_dialog:getAddedWidgetAvailableWidth()
-    local padding = math.max(8, Device.screen:scaleBySize(8))
-    local inner_width = math.max(1, available_width - padding * 2 - 2)
-    local label_width = math.floor(inner_width * 0.44)
-    local value_width = math.max(1, inner_width - label_width)
-    local label_face = Font:getFace("smallinfofontbold", 17)
-    local value_face = Font:getFace("smallinfofont", 17)
-    local server_face = Font:getFace("smallinfofontbold", 19)
-    local status_rows = VerticalGroup:new{ align = "left" }
-
-    local function addStatusRow(label, value)
-        table.insert(status_rows, HorizontalGroup:new{
-            align = "center",
-            TextBoxWidget:new{ text = label .. ":", width = label_width, face = label_face, alignment = "left" },
-            TextBoxWidget:new{ text = value, width = value_width, face = value_face, alignment = "left" },
-        })
+    if not server then
+        self:showServers()
+        return
     end
-
-    addStatusRow(_("Enabled"), enabled and _("Yes") or _("No"))
-    addStatusRow(_("Library Listing"), listing)
-    addStatusRow(_("Linked Books"), logical)
-    addStatusRow(_("Rich Position"), rich)
-    addStatusRow(_("Device Identity"), device_identity)
-    addStatusRow(_("Matching Method"), matching)
-    addStatusRow(_("Account Recovery"), recovery)
-
-    local card = FrameContainer:new{
-        width = available_width,
-        bordersize = 1,
-        radius = math.max(7, Device.screen:scaleBySize(7)),
-        padding = padding,
-        LeftContainer:new{
-            dimen = Geom:new{ w = inner_width, h = status_rows:getSize().h },
-            status_rows,
-        },
-    }
-    local header = VerticalGroup:new{ align = "left" }
-    table.insert(header, TextBoxWidget:new{ text = serverLabel(server), width = available_width, face = server_face, alignment = "left" })
-    table.insert(header, VerticalSpan:new{ width = math.max(5, Device.screen:scaleBySize(5)) })
-    table.insert(header, card)
-    self.server_dialog:addWidget(header)
-
-    suppressDialogContainerHolds(self.server_dialog)
-    UIManager:show(self.server_dialog)
+    self:showServerSettingsPage(server)
 end
 
-function ProgressSyncDeluxe:refreshServerLibrary(server)
-    local function loadRawLibrary()
-        if server.capabilities and server.capabilities.document_listing == false then
-            return self:showServerLibrary(server, self.store:getKnownDocuments(server.id), false, false)
-        end
-        self:newClient(server):listDocuments(server.username, server.userkey, function(ok, status, body)
-            local data = decode(body)
-            if ok and status == 200 and data and type(data.documents) == "table" then
-                self.store:setCapability(server.id, "document_listing", true)
-                self.store:setKnownDocuments(server.id, data.documents)
-                self:showServerLibrary(server, data.documents, true, false)
-            else
-                self.store:setCapability(server.id, "document_listing", false)
-                self:showServerLibrary(server, self.store:getKnownDocuments(server.id), false, false)
-            end
-        end)
-    end
+function ProgressSyncDeluxe:showCachedServerLibrary(server, browser)
+    if not self.server_library_controller then return false end
+    return self.server_library_controller:showCachedServerLibrary(server, browser)
+end
 
-    local capabilities = server.capabilities or {}
-    if capabilities.logical_library ~= true then
-        return loadRawLibrary()
-    end
-
-    self:newClient(server):listLogicalLibrary(server.username, server.userkey, function(ok, status, body)
-        local data = decode(body)
-        if ok and status == 200 and data and type(data.books) == "table" then
-            self.store:setKnownDocuments(server.id, data.books)
-            self:showServerLibrary(server, data.books, true, true)
-        elseif status == 404 or status == 405 then
-            self.store:setCapability(server.id, "logical_books", false)
-            self.store:setCapability(server.id, "logical_library", false)
-            loadRawLibrary()
-        else
-            local cached = self.store:getKnownDocuments(server.id)
-            if #cached > 0 then
-                self:showServerLibrary(server, cached, false, true)
-            else
-                loadRawLibrary()
-            end
-        end
-    end)
+function ProgressSyncDeluxe:refreshServerLibrary(server, browser)
+    if not self.server_library_controller then return end
+    return self.server_library_controller:refreshServerLibrary(server, browser)
 end
 function ProgressSyncDeluxe:showLogicalLinkPicker(server, documents)
-    local raw_books = {}
-    for _, book in ipairs(documents or {}) do
-        if book.kind == "raw" and book.document then table.insert(raw_books, book) end
-    end
-    DiagnosticLog.log("logical link picker", server.name or server.url or "", "raw_books", #raw_books)
-    if #raw_books < 2 then
-        UIManager:show(InfoMessage:new{ text = _("At least two unlinked books are required.") })
-        return self:refreshServerLibrary(server)
-    end
-
-    local dialog
-    local selected_documents = {}
-    local buttons = {}
-
-    local function choiceLabel(book)
-        local percentage = book.percentage ~= nil and formatPercent(book.percentage) or _("Unknown")
-        local title = book.title or book.filename or tostring(book.document)
-        local marker = selected_documents[book.document] and "[x]" or "[ ]"
-        return T(_("%1 %2 — %3"), marker, tostring(title), percentage)
-    end
-
-    for index, book in ipairs(raw_books) do
-        local selected_book = book
-        local button_id = "logical_link_book_" .. tostring(index)
-        table.insert(buttons, {{
-            id = button_id,
-            text = choiceLabel(selected_book),
-            callback = function()
-                local document = selected_book.document
-                selected_documents[document] = not selected_documents[document]
-                local button = dialog:getButtonById(button_id)
-                if button then button:setText(choiceLabel(selected_book), button.width) end
-                UIManager:setDirty(dialog, "ui")
-            end,
-        }})
-    end
-
-    table.insert(buttons, {
-        {
-            text = _("Cancel"),
-            callback = function()
-                UIManager:close(dialog)
-                self:refreshServerLibrary(server)
-            end,
-        },
-        {
-            text = _("Continue"),
-            callback = function()
-                local selected = {}
-                for _, book in ipairs(raw_books) do
-                    if selected_documents[book.document] then table.insert(selected, book) end
-                end
-                if #selected < 2 then
-                    return UIManager:show(InfoMessage:new{ text = _("Select at least two books to link.") })
-                end
-                UIManager:close(dialog)
-                self:showLogicalProgressSourcePicker(server, selected)
-            end,
-        },
-    })
-
-    dialog = ButtonDialog:new{
-        title = _("Link Books"),
-        title_align = "left",
-        width_factor = 0.98,
-        rows_per_page = { 6, 5, 4, 3 },
-        buttons = buttons,
-    }
-    local width = dialog:getAddedWidgetAvailableWidth()
-    dialog:addWidget(TextBoxWidget:new{
-        text = _("Select alternate versions of the same book. Each raw sync record remains stored separately and can be unlinked later."),
-        width = width,
-        face = Font:getFace("smallinfofont"),
-        alignment = "left",
-    })
-    suppressDialogContainerHolds(dialog)
-    UIManager:show(dialog)
+    if not self.server_library_controller then return end
+    return self.server_library_controller:showLogicalLinkPicker(server, documents)
 end
 
 function ProgressSyncDeluxe:showLogicalProgressSourcePicker(server, selected)
-    table.sort(selected, function(a, b)
-        local a_percentage = tonumber(a.percentage) or -1
-        local b_percentage = tonumber(b.percentage) or -1
-        if a_percentage ~= b_percentage then return a_percentage > b_percentage end
-        return (tonumber(a.timestamp) or 0) > (tonumber(b.timestamp) or 0)
-    end)
-
-    local dialog
-    local buttons = {}
-    for index, book in ipairs(selected) do
-        local selected_book = book
-        local percentage = selected_book.percentage ~= nil and formatPercent(selected_book.percentage) or _("Unknown")
-        local title = selected_book.title or selected_book.filename or tostring(selected_book.document)
-        local device = selected_book.device or _("Unknown device")
-        local label = T(_("%1 — %2 — %3"), tostring(title), percentage, tostring(device))
-        if index == 1 then label = T(_("Recommended: %1"), label) end
-        table.insert(buttons, {{
-            text = label,
-            callback = function()
-                UIManager:close(dialog)
-                local documents = {}
-                for _, candidate in ipairs(selected) do table.insert(documents, candidate.document) end
-                local linking = InfoMessage:new{ text = _("Linking books...") }
-                UIManager:show(linking)
-                self:newClient(server):createLogicalBook(server.username, server.userkey, {
-                    documents = documents,
-                    progress_source_document = selected_book.document,
-                }, function(ok, status, body)
-                    UIManager:close(linking)
-                    if ok and status == 201 then
-                        UIManager:show(InfoMessage:new{ text = _("Books linked."), timeout = 3 })
-                    else
-                        local message = serverResponseMessage(body) or T(_("Linking failed (HTTP %1)."), tostring(status or "?"))
-                        UIManager:show(InfoMessage:new{ text = message })
-                    end
-                    self:refreshServerLibrary(self.store:getServer(server.id) or server)
-                end)
-            end,
-        }})
-    end
-    table.insert(buttons, {{
-        text = _("Cancel"),
-        callback = function()
-            UIManager:close(dialog)
-            self:refreshServerLibrary(server)
-        end,
-    }})
-
-    dialog = ButtonDialog:new{
-        title = _("Choose Shared Reading Position"),
-        title_align = "left",
-        width_factor = 0.98,
-        buttons = buttons,
-    }
-    local width = dialog:getAddedWidgetAvailableWidth()
-    dialog:addWidget(TextBoxWidget:new{
-        text = _("Choose which version supplies the starting shared progress. The furthest position is recommended by default; choose another version if you intentionally restarted or moved backward."),
-        width = width,
-        face = Font:getFace("smallinfofont"),
-        alignment = "left",
-    })
-    suppressDialogContainerHolds(dialog)
-    UIManager:show(dialog)
+    if not self.server_library_controller then return end
+    return self.server_library_controller:showLogicalProgressSourcePicker(server, selected)
 end
 
-function ProgressSyncDeluxe:confirmUnlinkLogicalBook(server, logical_book)
-    local logical_id = tonumber(logical_book.logical_book_id)
-    if not logical_id then return end
-    local dialog
-    dialog = ButtonDialog:new{
-        title = _("Unlink linked book?"),
-        title_align = "left",
-        buttons = {
-            {{
-                text = _("This removes only the grouping. The raw sync records and their stored progress remain intact."),
-                enabled = false,
-            }},
-            {
-                { text = _("Cancel"), callback = function() UIManager:close(dialog); self:showLogicalBookInspection(server, logical_book) end },
-                { text = _("Unlink All"), callback = function()
-                    UIManager:close(dialog)
-                    local working = InfoMessage:new{ text = _("Unlinking books...") }
-                    UIManager:show(working)
-                    self:newClient(server):unlinkLogicalBook(server.username, server.userkey, logical_id, function(ok, status, body)
-                        UIManager:close(working)
-                        if ok and status == 200 then
-                            UIManager:show(InfoMessage:new{ text = _("Books unlinked."), timeout = 3 })
-                        else
-                            local message = serverResponseMessage(body) or T(_("Unlink failed (HTTP %1)."), tostring(status or "?"))
-                            UIManager:show(InfoMessage:new{ text = message })
-                        end
-                        self:refreshServerLibrary(self.store:getServer(server.id) or server)
-                    end)
-                end },
-            },
-        },
-    }
-    suppressDialogContainerHolds(dialog)
-    UIManager:show(dialog)
+function ProgressSyncDeluxe:confirmUnlinkLogicalBook(server, logical_book, browser)
+    if not self.server_library_controller then return end
+    return self.server_library_controller:confirmUnlinkLogicalBook(server, logical_book, browser)
 end
 
-function ProgressSyncDeluxe:showLogicalBookInspection(server, summary)
-    local logical_id = tonumber(summary and summary.logical_book_id)
-    if not logical_id then return self:refreshServerLibrary(server) end
-    self:newClient(server):getLogicalBook(server.username, server.userkey, logical_id, function(ok, status, body)
-        local data = decode(body)
-        local logical_book = data and data.logical_book
-        if not ok or status ~= 200 or type(logical_book) ~= "table" then
-            local message = serverResponseMessage(body) or T(_("Linked book could not be loaded (HTTP %1)."), tostring(status or "?"))
-            UIManager:show(InfoMessage:new{ text = message })
-            return self:refreshServerLibrary(server)
-        end
-
-        local timestamp = tonumber(logical_book.timestamp) or 0
-        local rows = {
-            { label = _("Linked Versions"), value = tostring(tonumber(logical_book.linked_count) or 0) },
-            { label = _("Shared Position"), value = logical_book.percentage ~= nil and formatPercent(logical_book.percentage) or _("Unknown") },
-            { label = _("Last Sync"), value = timestamp > 0 and os.date("%Y-%m-%d %H:%M", timestamp) or _("Unknown date") },
-            { label = _("Last Device"), value = tostring(logical_book.device or _("Unknown device")) },
-            { label = _("Source Document"), value = tostring(logical_book.source_document or _("Unknown")) },
-        }
-        local members = type(logical_book.members) == "table" and logical_book.members or {}
-        for index = 1, math.min(#members, 3) do
-            local member = members[index]
-            local member_name = member.filename or member.title or member.document or _("Unknown")
-            local member_percentage = member.percentage ~= nil and formatPercent(member.percentage) or _("Unknown")
-            table.insert(rows, { label = T(_("Version %1"), index), value = T(_("%1 — %2"), tostring(member_name), member_percentage) })
-        end
-        if #members > 3 then
-            table.insert(rows, { label = _("More Versions"), value = tostring(#members - 3) })
-        end
-
-        self:showStatusCard(logical_book.title or _("Linked Book"), rows, {
-            { text = _("Back"), callback = function(card) UIManager:close(card); self:refreshServerLibrary(server) end },
-            { text = _("Unlink All"), callback = function(card) UIManager:close(card); self:confirmUnlinkLogicalBook(server, logical_book) end },
-        })
-    end)
+function ProgressSyncDeluxe:showLogicalBookInspection(server, summary, browser)
+    if not self.server_library_controller then return end
+    return self.server_library_controller:showLogicalBookInspection(server, summary, browser)
 end
 
-function ProgressSyncDeluxe:showServerDocumentInspection(server, doc, match, documents, authoritative, logical_mode)
-    if not doc then return end
-
-    local title = doc.title or (match and match.title) or doc.filename or (match and match.filename)
-        or T(_("Unknown book (%1)"), tostring(doc.document or ""):sub(1, 8))
-    local author = doc.authors or (match and match.authors) or _("Metadata Unavailable")
-    if type(author) == "table" then
-        local parts = {}
-        for _, value in ipairs(author) do table.insert(parts, tostring(value)) end
-        author = #parts > 0 and table.concat(parts, ", ") or _("Metadata Unavailable")
-    elseif author ~= nil then
-        author = tostring(author)
-    end
-    local filename = doc.filename or (match and match.filename) or _("Unknown filename")
-    local timestamp = tonumber(doc.timestamp) or 0
-    local stamp = timestamp > 0 and os.date("%Y-%m-%d %H:%M", timestamp) or _("Unknown date")
-    local local_status = match
-        and T(_("%1 (%2)"), match.filename or _("book"), match.confidence or _("Unknown"))
-        or _("Not found")
-
-    local title_face = Font:getFace("smallinfofontbold")
-    local book_title_face = Font:getFace("smallinfofontbold")
-    local detail_face = Font:getFace("x_smallinfofont")
-    local label_face = Font:getFace("smallinfofontbold")
-
-    self.server_book_dialog = ButtonDialog:new{
-        title = _("Deluxe-Sync"),
-        title_align = "left",
-        title_face = title_face,
-        width_factor = 0.98,
-        use_info_style = false,
-        dismissable = false,
-        buttons = {{
-            {
-                text = _("Back to server book list"),
-                callback = function()
-                    UIManager:close(self.server_book_dialog)
-                    self:showServerLibrary(server, documents, authoritative, logical_mode)
-                end,
-            },
-        }},
-    }
-
-    local available_width = self.server_book_dialog:getAddedWidgetAvailableWidth()
-    local gap = math.max(8, math.floor(available_width * 0.025))
-    local left_width = math.floor(available_width * 0.39)
-    local right_width = available_width - left_width - gap
-    local cover_max_width = math.max(80, left_width - 16)
-    local cover_max_height = math.floor(Device.screen:getHeight() * 0.30)
-
-    local left_column = VerticalGroup:new{ align = "center" }
-    local thumbnail
-    if match and match.path and self.ui.bookinfo then
-        local ok, cover = pcall(function()
-            return self.ui.bookinfo:getCoverImage(self.ui.document, match.path)
-        end)
-        if ok then thumbnail = cover end
-    end
-    if thumbnail then
-        local cover_width, cover_height = thumbnail:getWidth(), thumbnail:getHeight()
-        if cover_width > cover_max_width or cover_height > cover_max_height then
-            local scale = math.min(cover_max_width / cover_width, cover_max_height / cover_height)
-            cover_width = math.max(1, math.floor(cover_width * scale))
-            cover_height = math.max(1, math.floor(cover_height * scale))
-            thumbnail = RenderImage:scaleBlitBuffer(thumbnail, cover_width, cover_height, true)
-        end
-        table.insert(left_column, CenterContainer:new{
-            dimen = Geom:new{ w = left_width, h = cover_height },
-            ImageWidget:new{ image = thumbnail, width = cover_width, height = cover_height },
-        })
-    else
-        local placeholder_width = math.min(cover_max_width, math.floor(cover_max_height * 0.67))
-        local placeholder_height = math.min(cover_max_height, math.floor(placeholder_width / 0.67))
-        local placeholder_border = 1
-        local placeholder_padding = math.max(6, Device.screen:scaleBySize(6))
-        local placeholder_inner_width = math.max(1, placeholder_width - (placeholder_border + placeholder_padding) * 2)
-        local placeholder_inner_height = math.max(1, placeholder_height - (placeholder_border + placeholder_padding) * 2)
-        local placeholder_content = VerticalGroup:new{ align = "center" }
-        table.insert(placeholder_content, IconWidget:new{
-            icon = "resources/icons/mdlight/book.opened.svg",
-            width = math.max(32, math.floor(placeholder_width * 0.28)),
-            height = math.max(32, math.floor(placeholder_width * 0.28)),
-        })
-        table.insert(placeholder_content, VerticalSpan:new{ width = 8 })
-        table.insert(placeholder_content, TextBoxWidget:new{
-            text = _("Cover unavailable"),
-            width = math.max(40, placeholder_inner_width - 4),
-            face = detail_face,
-            alignment = "center",
-        })
-        table.insert(left_column, CenterContainer:new{
-            dimen = Geom:new{ w = left_width, h = placeholder_height },
-            FrameContainer:new{
-                bordersize = placeholder_border,
-                radius = math.max(4, Device.screen:scaleBySize(4)),
-                padding = placeholder_padding,
-                CenterContainer:new{
-                    dimen = Geom:new{ w = placeholder_inner_width, h = placeholder_inner_height },
-                    placeholder_content,
-                },
-            },
-        })
-    end
-
-    table.insert(left_column, VerticalSpan:new{ width = 3 })
-    table.insert(left_column, TextBoxWidget:new{
-        text = tostring(title),
-        width = left_width,
-        face = book_title_face,
-        line_height = 0.2,
-        alignment = "center",
+function ProgressSyncDeluxe:showServerDocumentInspection(server, doc, match, documents, authoritative, logical_mode, browser, entry)
+    local ServerRecordInspection = require("ServerRecordInspection")
+    return ServerRecordInspection.show(self, server, doc, match, documents, authoritative, logical_mode, {
+        format_percent = formatPercent,
+        server_label = serverLabel,
+        suppress_dialog_holds = suppressDialogContainerHolds,
+        browser = browser,
+        entry = entry,
     })
-    table.insert(left_column, TextBoxWidget:new{
-        text = tostring(author),
-        width = left_width,
-        face = detail_face,
-        line_height = 0.15,
-        alignment = "center",
-    })
-    table.insert(left_column, TextBoxWidget:new{
-        text = tostring(filename),
-        width = left_width,
-        face = detail_face,
-        line_height = 0.15,
-        alignment = "center",
-    })
-    table.insert(left_column, VerticalSpan:new{ width = 5 })
-    table.insert(left_column, TextBoxWidget:new{
-        text = _("LOCAL MATCH"),
-        width = left_width,
-        face = label_face,
-        alignment = "center",
-    })
-    table.insert(left_column, TextBoxWidget:new{
-        text = local_status,
-        width = left_width,
-        face = detail_face,
-        alignment = "center",
-    })
-
-    local right_column = VerticalGroup:new{}
-    table.insert(right_column, TextBoxWidget:new{
-        text = _("SERVER RECORD"),
-        width = right_width,
-        face = label_face,
-        alignment = "center",
-    })
-    table.insert(right_column, VerticalSpan:new{ width = 5 })
-
-    local remote_label_face = Font:getFace("smallinfofont", 16)
-    local remote_value_face = Font:getFace("smallinfofontbold", 16)
-    local remote_padding = math.max(6, Device.screen:scaleBySize(6))
-    local remote_inner_width = math.max(1, right_width - 2 - remote_padding * 2)
-    local remote_label_width = math.floor(remote_inner_width * 0.30)
-    local remote_value_width = math.max(1, remote_inner_width - remote_label_width)
-    local remote_rows = VerticalGroup:new{ align = "left" }
-    local function addRemoteRow(label, value)
-        table.insert(remote_rows, HorizontalGroup:new{
-            align = "center",
-            TextBoxWidget:new{
-                text = label .. ":",
-                width = remote_label_width,
-                face = remote_label_face,
-                alignment = "left",
-            },
-            TextBoxWidget:new{
-                text = tostring(value or ""),
-                width = remote_value_width,
-                face = remote_value_face,
-                alignment = "left",
-            },
-        })
-    end
-    addRemoteRow(_("Last Sync"), stamp)
-    addRemoteRow(_("Position"), doc.percentage ~= nil and formatPercent(doc.percentage) or _("Unknown"))
-    addRemoteRow(_("Server"), serverLabel(server))
-    addRemoteRow(_("Document ID"), tostring(doc.document or _("Unknown")))
-    addRemoteRow(_("Listing source"), authoritative and _("Live server response") or _("Cached server record"))
-
-    local remote_content = LeftContainer:new{
-        dimen = Geom:new{ w = remote_inner_width, h = remote_rows:getSize().h },
-        remote_rows,
-    }
-    table.insert(right_column, FrameContainer:new{
-        width = right_width,
-        bordersize = 1,
-        radius = math.max(6, Device.screen:scaleBySize(6)),
-        padding = remote_padding,
-        remote_content,
-    })
-    table.insert(right_column, VerticalSpan:new{ width = 10 })
-    table.insert(right_column, TextBoxWidget:new{
-        text = _("Inspection only. You are browsing this server record; no reading position or sync state will be changed."),
-        width = right_width,
-        face = detail_face,
-        alignment = "center",
-    })
-
-    self.server_book_dialog:addWidget(HorizontalGroup:new{
-        align = "top",
-        left_column,
-        HorizontalSpan:new{ width = gap },
-        right_column,
-    })
-    suppressDialogContainerHolds(self.server_book_dialog)
-    UIManager:show(self.server_book_dialog)
 end
 
-function ProgressSyncDeluxe:showServerLibrary(server, documents, authoritative, logical_mode)
-    documents = documents or {}
-    table.sort(documents, function(a, b) return (a.timestamp or 0) > (b.timestamp or 0) end)
-    local local_matches = LocalLibrary.scan(documents)
-    local rows = {}
-
-    for document_index, doc in ipairs(documents) do
-        local item = doc
-        local is_logical = item.kind == "logical"
-        local match = not is_logical and local_matches[item.document or ""] or nil
-        local server_has_metadata = is_logical or item.title ~= nil or item.authors ~= nil
-        local title = item.title or item.filename
-        local author = item.authors
-        if type(author) == "table" then
-            local parts = {}
-            for author_index, value in ipairs(author) do table.insert(parts, tostring(value)) end
-            author = #parts > 0 and table.concat(parts, ", ") or nil
-        elseif author ~= nil then
-            author = tostring(author)
-        end
-        table.insert(rows, {
-            item = item,
-            match = match,
-            title = title or T(_("Unknown book (%1)"), tostring(item.document or ""):sub(1, 8)),
-            author = author,
-            has_metadata = server_has_metadata,
-            is_logical = is_logical,
-        })
-    end
-
-    local function backToServerDetails()
-        UIManager:close(self.library_dialog)
-        self:showServer(self.store:getServer(server.id) or server)
-    end
-
-    self.library_dialog = ButtonDialog:new{
-        width = math.floor(Device.screen:getWidth() * 0.94),
-        buttons = {{
-            { text = _("Back to server details"), callback = backToServerDetails },
-        }},
-    }
-
-    local body_width = self.library_dialog:getAddedWidgetAvailableWidth()
-    local scrollbar_width = ScrollableContainer:getScrollbarWidth()
-    local list_width = math.max(1, body_width - scrollbar_width - Device.screen:scaleBySize(4))
-    local card_height = math.max(70, math.floor(Device.screen:getHeight() * 0.102))
-    local card_gap = math.max(8, Device.screen:scaleBySize(8))
-    local card_padding = math.max(8, Device.screen:scaleBySize(8))
-    local icon_slot = math.max(46, math.floor(list_width * 0.13))
-    local arrow_slot = math.max(52, math.floor(list_width * 0.12))
-    local icon_size = math.max(26, Device.screen:scaleBySize(26))
-    local chevron_size = math.max(22, Device.screen:scaleBySize(22))
-    local title_face = Font:getFace("smallinfofontbold")
-    local subtitle_face = Font:getFace("smallinfofont")
-
-    local with_metadata, without_metadata = {}, {}
-    for row_index, entry in ipairs(rows) do
-        table.insert(entry.has_metadata and with_metadata or without_metadata, entry)
-    end
-
-    local cards = VerticalGroup:new{ align = "left" }
-    local rendered_count = 0
-    local function addCard(selected)
-        if rendered_count > 0 then table.insert(cards, VerticalSpan:new{ width = card_gap }) end
-        rendered_count = rendered_count + 1
-
-        local current_trailing_slot = selected.has_metadata and arrow_slot or 0
-        local current_text_width = math.max(80, list_width - icon_slot - current_trailing_slot - card_padding * 2)
-        local subtitle
-        if selected.is_logical then
-            subtitle = T(_("%1 linked versions"), tonumber(selected.item.linked_count) or 0)
-        else
-            subtitle = selected.has_metadata and (selected.author or _("Unknown author")) or _("Metadata Unavailable")
-        end
-        local details = VerticalGroup:new{ align = "left" }
-        table.insert(details, TextWidget:new{
-            text = selected.title,
-            max_width = current_text_width,
-            face = title_face,
-            padding = 0,
-        })
-        table.insert(details, VerticalSpan:new{ width = math.max(2, Device.screen:scaleBySize(2)) })
-        table.insert(details, TextWidget:new{
-            text = subtitle,
-            max_width = current_text_width,
-            face = subtitle_face,
-            padding = 0,
-        })
-
-        local trailing
-        if selected.has_metadata then
-            trailing = CenterContainer:new{
-                dimen = Geom:new{ w = current_trailing_slot, h = card_height - card_padding * 2 },
-                IconWidget:new{
-                    icon = "chevron.right",
-                    width = chevron_size,
-                    height = chevron_size,
-                    alpha = true,
-                },
-            }
-        else
-            trailing = HorizontalSpan:new{ width = 0 }
-        end
-
-        local card = FrameContainer:new{
-            width = list_width,
-            height = card_height,
-            bordersize = 1,
-            radius = math.max(8, Device.screen:scaleBySize(8)),
-            padding = card_padding,
-            HorizontalGroup:new{
-                align = "center",
-                CenterContainer:new{
-                    dimen = Geom:new{ w = icon_slot, h = card_height - card_padding * 2 },
-                    IconWidget:new{
-                        icon = "book.opened",
-                        width = icon_size,
-                        height = icon_size,
-                        alpha = true,
-                    },
-                },
-                LeftContainer:new{
-                    dimen = Geom:new{ w = current_text_width, h = card_height - card_padding * 2 },
-                    details,
-                },
-                trailing,
-            },
-        }
-
-        local tappable_card = InputContainer:new{
-            dimen = Geom:new{ x = 0, y = 0, w = list_width, h = card_height },
-            card,
-        }
-        tappable_card.ges_events = {
-            TapCard = {
-                GestureRange:new{
-                    ges = "tap",
-                    range = tappable_card.dimen,
-                },
-            },
-        }
-        tappable_card.onTapCard = function()
-            UIManager:close(self.library_dialog)
-            if selected.is_logical then
-                self:showLogicalBookInspection(server, selected.item)
-            else
-                self:showServerDocumentInspection(server, selected.item, selected.match, documents, authoritative, logical_mode)
-            end
-            return true
-        end
-        table.insert(cards, tappable_card)
-    end
-
-    for metadata_index, entry in ipairs(with_metadata) do addCard(entry) end
-
-    if #without_metadata > 0 then
-        if #with_metadata > 0 then table.insert(cards, VerticalSpan:new{ width = math.max(12, card_gap) }) end
-        local divider_label = TextWidget:new{
-            text = T(_("Metadata Unavailable (%1)"), #without_metadata),
-            face = title_face,
-            padding = 0,
-        }
-        local divider_gap = math.max(8, Device.screen:scaleBySize(8))
-        local divider_line_width = math.max(20, math.floor((list_width - divider_label:getSize().w - divider_gap * 2) / 2))
-        local divider_height = math.max(divider_label:getSize().h, Device.screen:scaleBySize(2))
-        table.insert(cards, HorizontalGroup:new{
-            align = "center",
-            CenterContainer:new{
-                dimen = Geom:new{ w = divider_line_width, h = divider_height },
-                LineWidget:new{ dimen = Geom:new{ w = divider_line_width, h = 1 } },
-            },
-            HorizontalSpan:new{ width = divider_gap },
-            divider_label,
-            HorizontalSpan:new{ width = divider_gap },
-            CenterContainer:new{
-                dimen = Geom:new{ w = divider_line_width, h = divider_height },
-                LineWidget:new{ dimen = Geom:new{ w = divider_line_width, h = 1 } },
-            },
-        })
-        table.insert(cards, VerticalSpan:new{ width = math.max(6, Device.screen:scaleBySize(6)) })
-        rendered_count = 0
-        for unavailable_index, entry in ipairs(without_metadata) do addCard(entry) end
-    end
-
-    if #rows == 0 then
-        table.insert(cards, TextBoxWidget:new{
-            text = _("No known books."),
-            width = list_width,
-            face = subtitle_face,
-            alignment = "center",
-        })
-    end
-
-    local header_icon_size = math.max(30, math.floor(body_width * 0.08))
-    local header_title_width = math.max(120, body_width - header_icon_size * 2)
-    local body = VerticalGroup:new{ align = "left" }
-    table.insert(body, HorizontalGroup:new{
-        align = "center",
-        HorizontalSpan:new{ width = header_icon_size },
-        TextBoxWidget:new{
-            text = _("Browse Tracked Books"),
-            width = header_title_width,
-            face = Font:getFace("smallinfofontbold"),
-            alignment = "center",
-        },
-        IconButton:new{
-            icon = "cre.render.reload",
-            width = header_icon_size,
-            height = header_icon_size,
-            padding = 4,
-            callback = function()
-                UIManager:close(self.library_dialog)
-                self:refreshServerLibrary(self.store:getServer(server.id) or server)
-            end,
-            show_parent = self.library_dialog,
-        },
-    })
-    table.insert(body, TextBoxWidget:new{
-        text = T(_("%1 tracked books"), #documents),
-        width = body_width,
-        face = Font:getFace("smallinfofont"),
-        alignment = "center",
-    })
-    local library_scroll_ratio = 0.69
-    if logical_mode then
-        local raw_count = 0
-        for _, book in ipairs(documents) do
-            if book.kind == "raw" then raw_count = raw_count + 1 end
-        end
-        if raw_count >= 2 then
-            table.insert(body, VerticalSpan:new{ width = math.max(8, Device.screen:scaleBySize(8)) })
-            table.insert(body, ButtonTable:new{
-                width = body_width,
-                buttons = {{{
-                    text = _("Link Books"),
-                    callback = function()
-                        UIManager:close(self.library_dialog)
-                        self:showLogicalLinkPicker(server, documents)
-                    end,
-                }}},
-            })
-            library_scroll_ratio = 0.61
-        end
-    end
-    table.insert(body, VerticalSpan:new{ width = math.max(8, Device.screen:scaleBySize(8)) })
-    table.insert(body, FreeScrollableContainer:new{
-        dimen = Geom:new{ w = body_width, h = math.floor(Device.screen:getHeight() * library_scroll_ratio) },
-        show_parent = self.library_dialog,
-        cards,
-    })
-
-    self.library_dialog:addWidget(body)
-    suppressDialogContainerHolds(self.library_dialog)
-    UIManager:show(self.library_dialog)
+function ProgressSyncDeluxe:showServerLibrary(server, documents, authoritative, logical_mode, existing_page, refreshed_at)
+    if not self.server_library_controller then return end
+    return self.server_library_controller:showServerLibrary(server, documents, authoritative, logical_mode, existing_page, refreshed_at)
 end
+
 function ProgressSyncDeluxe:canAutoSync()
-    return self.store ~= nil
-        and self.store.data.settings.auto_sync == true
-        and self.ui.document ~= nil
-        and not self.preview
-        and #self.store:getEnabledServers() > 0
+    return self.progress_lifecycle_controller ~= nil
+        and self.progress_lifecycle_controller:canAutoSync()
 end
 
 function ProgressSyncDeluxe:autoSyncPush()
-    if not self:canAutoSync() then return end
-    if NetworkMgr:isOnline() then
-        self:pushAll(false)
-    else
-        self:queueCurrentProgress()
-    end
+    if not self.progress_lifecycle_controller then return end
+    return self.progress_lifecycle_controller:autoSyncPush()
 end
 
 function ProgressSyncDeluxe:autoSyncPull()
-    if not self:canAutoSync() or not NetworkMgr:isOnline() then return end
-    self:pullAll(false)
+    if not self.progress_lifecycle_controller then return end
+    return self.progress_lifecycle_controller:autoSyncPull()
 end
 
 function ProgressSyncDeluxe:scheduleAutomaticUpdateCheck()
-    if self._automatic_update_check_done or not self.store or not NetworkMgr:isOnline() then return end
-    self._automatic_update_check_done = true
-    UIManager:scheduleIn(1, function()
-        require("deluxe_sync_updater").checkAutomatic(self)
-    end)
+    if not self.progress_lifecycle_controller then return end
+    return self.progress_lifecycle_controller:scheduleAutomaticUpdateCheck()
 end
 
 function ProgressSyncDeluxe:onReaderReady()
-    self:onDispatcherRegisterActions()
-    self.last_page_turn_timestamp = 0
-    self.last_auto_sync_page = self.ui.getCurrentPage and self.ui:getCurrentPage() or nil
-    self:scheduleAutomaticUpdateCheck()
-    if self:canAutoSync() then
-        UIManager:nextTick(function() self:autoSyncPull() end)
-    end
+    if not self.progress_lifecycle_controller then return end
+    return self.progress_lifecycle_controller:onReaderReady()
 end
 
 function ProgressSyncDeluxe:onPageUpdate(page)
-    if page ~= nil and page ~= self.last_auto_sync_page then
-        self.last_auto_sync_page = page
-        self.last_page_turn_timestamp = os.time()
-    end
+    if not self.progress_lifecycle_controller then return end
+    return self.progress_lifecycle_controller:onPageUpdate(page)
 end
 
 function ProgressSyncDeluxe:onResume()
-    if not self:canAutoSync() then return end
-    UIManager:scheduleIn(1, function() self:autoSyncPull() end)
+    if not self.progress_lifecycle_controller then return end
+    return self.progress_lifecycle_controller:onResume()
 end
 
 function ProgressSyncDeluxe:onSuspend()
-    self:autoSyncPush()
+    if not self.progress_lifecycle_controller then return end
+    return self.progress_lifecycle_controller:onSuspend()
 end
 
 function ProgressSyncDeluxe:onNetworkConnected()
-    self:scheduleAutomaticUpdateCheck()
-    if not self:canAutoSync() then return end
-    UIManager:scheduleIn(0.5, function()
-        self:retryQueue(false, function()
-            self:autoSyncPull()
-        end)
-    end)
+    if not self.progress_lifecycle_controller then return end
+    return self.progress_lifecycle_controller:onNetworkConnected()
 end
 
 function ProgressSyncDeluxe:onCloseDocument()
-    if self.preview then self.preview = nil; return end
-    self:autoSyncPush()
+    if not self.progress_lifecycle_controller then return end
+    return self.progress_lifecycle_controller:onCloseDocument()
 end
 
 return ProgressSyncDeluxe
