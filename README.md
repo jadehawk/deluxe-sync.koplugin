@@ -11,10 +11,11 @@ Current plugin version: **0.2.0.1**
 - Enhanced Techy-Notes servers can also keep a separately protected Deluxe-Sync profile for cross-device migration. It restores the same configured server URLs, usernames, preferences, and saved authentication keys so the new reader reconnects to the existing remote accounts and their already-synced progress instead of creating new accounts.
 - Cross-device Deluxe-Sync migration is reader-confirmed and revalidated immediately before apply. Protected authentication is delivered only to the specifically targeted reader, and a matching profile already present on that reader is not repeatedly offered.
 - Deluxe-Sync refreshes enhanced server capabilities on every network reconnect and polls pending restore requests before statistics/settings synchronization; server details use compact two-button action rows.
+- Enhanced servers advertising client notices v1 can surface account or linked-service warnings on the reader after successful syncs. Warning/error notices keep a persistent attention marker on the affected server entry, while repeated display of the same notice is suppressed for 24 hours.
 
 ## Overview
 
-Deluxe-Sync lets you configure multiple KOSync servers and push or pull reading progress across them from one plugin. It remains compatible with standard KOSync servers while detecting optional enhanced capabilities such as metadata, remote library listing, account recovery, rich positions, durable device identity, annotation synchronization, reading statistics, safe per-device settings backups, and protected Deluxe-Sync profile migration.
+Deluxe-Sync lets you configure multiple KOSync servers and push or pull reading progress across them from one plugin. It remains compatible with standard KOSync servers while detecting optional enhanced capabilities such as metadata, remote library listing, account recovery, rich positions, durable device identity, annotation synchronization, reading statistics, client notices, safe per-device settings backups, and protected Deluxe-Sync profile migration.
 
 Key capabilities include:
 
@@ -30,13 +31,14 @@ Key capabilities include:
 - Server-side logical-book linking on capable enhanced servers, with linked versions presented as one book while raw sync identities remain intact and reversible.
 - Capability-gated KOReader annotation sync on enhanced servers, including highlights, notes, bookmarks, offline-safe revision conflicts, and tombstones.
 - Capability-gated read-only KOReader reading-statistics upload with resumable history import and server-side deduplication.
+- Capability-gated client notices for enhanced servers, with 24-hour repeat suppression and a persistent server attention marker for warning/error notices.
 - Capability-gated per-device settings backups with a fail-closed core-only schema, sensitive/runtime-state filtering, checksum deduplication, and same-device reader-confirmed restore. Unknown third-party plugin settings are excluded by default; Deluxe-Sync setup/preferences use the separate protected profile path. An unchanged local checksum is only an optimization: Deluxe-Sync revalidates its remembered snapshot ID against the server and recreates the baseline if that server copy was deleted.
 - Protected cross-device Deluxe-Sync profile migration for capable servers, restoring the original server URLs, usernames, plugin preferences, and saved authentication keys so existing remote accounts and progress are reused without re-registration.
 - Safe remote-position review and preview before accepting a sync.
 - Optional six-digit email account recovery when supported by the server.
 - Built-in GitHub update checks and in-plugin updates.
 
-When Deluxe-Sync starts with no configured servers, it offers the complimentary **Techy-Notes.com** server at `https://sync.techy-notes.com` or lets the user configure a custom KOSync server. The complimentary server supports standard KOSync progress syncing plus metadata, remote library listing, account recovery, rich positions, durable device identity, logical books, annotation synchronization, reading statistics, safe per-device settings backups, and protected Deluxe-Sync profile migration. Selecting it does not automatically enable Auto-Sync Documents.
+When Deluxe-Sync starts with no configured servers, it offers the complimentary **Techy-Notes.com** server at `https://sync.techy-notes.com` or lets the user configure a custom KOSync server. The complimentary server supports standard KOSync progress syncing plus metadata, remote library listing, account recovery, rich positions, durable device identity, logical books, annotation synchronization, reading statistics, client notices, safe per-device settings backups, and protected Deluxe-Sync profile migration. Selecting it does not automatically enable Auto-Sync Documents.
 
 ## Screenshots
 
@@ -154,6 +156,10 @@ When `/api/v1/capabilities` advertises `annotations: true` and `annotations_vers
 Local edits and deletes are captured before remote deltas are applied. Updates target the last server revision the device actually observed; stale writes are returned as conflicts and the current server copy wins. Deletes are revisioned tombstones, so an offline device cannot accidentally resurrect an annotation that was deleted elsewhere. Annotation failures never enter the normal progress retry queue and never change standard KOSync success/failure behavior.
 
 Annotation positions always belong to the exact physical document identity that produced them. Linked books may aggregate their members for server-side viewing, but Deluxe-Sync does not translate a highlight or bookmark position from one EPUB/PDF version into another physical file. Servers that do not advertise annotation sync receive no Stage 7 annotation requests.
+
+### Client notices on capable servers
+
+When `/api/v1/capabilities` advertises `client_notices: true` and `client_notices_version >= 1`, Deluxe-Sync checks `/api/v1/client-notices` after successful progress activity. Informational notices may appear briefly, while warning/error notices also keep an attention marker on the affected server entry until the server stops returning that notice. The same notice is not repeatedly shown more than once every 24 hours. Standard KOSync servers and enhanced servers that do not advertise this capability receive no client-notice requests.
 
 ### Document matching
 
