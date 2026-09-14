@@ -179,6 +179,11 @@ function SyncClient:capabilitiesAsync(callback)
     self:_async("capabilities", nil, nil, {}, callback, true)
 end
 
+function SyncClient:getClientNotices(username, userkey, callback)
+    DiagnosticLog.log("client notices request", self.custom_url or "")
+    self:_async("client_notices", username, userkey, {}, callback)
+end
+
 function SyncClient:setRecoveryEmail(username, userkey, email)
     DiagnosticLog.log("recovery email update", self.custom_url or "", "username", username or "", "email", email or "")
     local setup_ok, setup_error = self:_setup(username, userkey)

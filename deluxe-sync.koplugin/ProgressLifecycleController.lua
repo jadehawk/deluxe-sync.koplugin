@@ -175,6 +175,7 @@ function ProgressLifecycleController:retryQueue(interactive, complete_callback, 
                     owner.queue:remove(item.server_id, item.document)
                     owner:heartbeatDevice(server, nil, false)
                     owner:nudgeOptionalData(server, payload.document, false)
+                    if owner.scheduleClientNoticesRefresh then owner:scheduleClientNoticesRefresh(server, 1) end
                 elseif is_book_not_found_response(status, body) then
                     owner.queue:remove(item.server_id, item.document)
                     if diagnostic_log then diagnostic_log.log("queue drop not tracked", server_label(server), "document", item.document, "status", status, "body", body) end

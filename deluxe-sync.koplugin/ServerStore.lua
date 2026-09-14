@@ -22,6 +22,7 @@ local defaults = {
     settings_backup_sync = {},
     deluxe_profile_sync = {},
     vocabulary_sync = {},
+    client_notices = {},
     settings = {
         auto_sync = false,
         sync_forward = "prompt",
@@ -55,6 +56,7 @@ function ServerStore:new()
     o.data.settings_backup_sync = o.data.settings_backup_sync or {}
     o.data.deluxe_profile_sync = o.data.deluxe_profile_sync or {}
     o.data.vocabulary_sync = o.data.vocabulary_sync or {}
+    o.data.client_notices = o.data.client_notices or {}
     o.data.settings = o.data.settings or deepCopy(defaults.settings)
     if o.data.settings.auto_sync == nil then o.data.settings.auto_sync = false end
     if o.data.settings.sync_forward == nil then o.data.settings.sync_forward = "prompt" end
@@ -204,6 +206,8 @@ function ServerStore:upsertServer(server)
         vocabulary_builder_batch_max = nil,
         vocabulary_context = nil,
         vocabulary_direction = nil,
+        client_notices = nil,
+        client_notices_version = nil,
     }
     for i, existing in ipairs(self.data.servers) do
         if existing.id == server.id then
@@ -229,6 +233,7 @@ function ServerStore:removeServer(id)
     self.data.settings_backup_sync[id] = nil
     self.data.deluxe_profile_sync[id] = nil
     self.data.vocabulary_sync[id] = nil
+    self.data.client_notices[id] = nil
     for canonical_document, aliases in pairs(self.data.aliases or {}) do
         local filtered = {}
         for _, alias in ipairs(aliases) do
@@ -258,6 +263,56 @@ function ServerStore:setCapability(id, key, value)
     server.capabilities = server.capabilities or {}
     server.capabilities[key] = value
     self:flush()
+end
+
+function ServerStore:getClientNoticeState(server_id)
+    self.data.client_notices = self.data.client_notices or {}
+    local state = self.data.client_notices[server_id]
+    if type(state) ~= "table" then
+        state = { notices = {}, last_shown = {}, checked_at = 0 }
+        self.data.client_notices[server_id] = state
+    end
+    state.notices = type(state.notices) == "table" and state.notices or {}
+    state.last_shown = type(state.last_shown) == "table" and state.last_shown or {}
+    state.checked_at = tonumber(state.checked_at) or 0
+    return state
+end
+
+function ServerStore:saveClientNotices(server_id, notices, checked_at)
+    local state = self:getClientNoticeState(server_id)
+    local current = type(notices) == "table" and notices or {}
+    local live_ids = {}
+    for _, notice in ipairs(current) do
+        if type(notice) == "table" and type(notice.id) == "string" and notice.id ~= "" then
+            live_ids[notice.id] = true
+        end
+    end
+    for notice_id in pairs(state.last_shown) do
+        if not live_ids[notice_id] then state.last_shown[notice_id] = nil end
+    end
+    state.notices = current
+    state.checked_at = tonumber(checked_at) or os.time()
+    self.data.client_notices[server_id] = state
+    self:flush()
+    return state
+end
+
+function ServerStore:markClientNoticeShown(server_id, notice_id, at)
+    if type(notice_id) ~= "string" or notice_id == "" then return false end
+    local state = self:getClientNoticeState(server_id)
+    state.last_shown[notice_id] = tonumber(at) or os.time()
+    self.data.client_notices[server_id] = state
+    self:flush()
+    return true
+end
+
+function ServerStore:serverNeedsAttention(server_id)
+    local state = self:getClientNoticeState(server_id)
+    for _, notice in ipairs(state.notices) do
+        local severity = type(notice) == "table" and tostring(notice.severity or "") or ""
+        if severity == "warning" or severity == "error" then return true end
+    end
+    return false
 end
 
 function ServerStore:setKnownDocuments(server_id, documents, options)

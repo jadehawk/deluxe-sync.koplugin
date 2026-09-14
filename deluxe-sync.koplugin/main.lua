@@ -60,6 +60,7 @@ local PluginMeta = dofile(plugin_root .. "/_meta.lua")
 local PLUGIN_VERSION = assert(PluginMeta.version, "Missing plugin version in _meta.lua")
 local QUEUE_DISABLE_THRESHOLD = 20
 local QUEUE_RETRY_DELAYS = { 30, 120, 300, 900, 1800, 3600 }
+local CLIENT_NOTICE_REPEAT_SECONDS = 24 * 60 * 60
 
 local DiagnosticLog
 local SyncClient
@@ -230,6 +231,8 @@ function ProgressSyncDeluxe:init()
     self.deluxe_profile_candidate_seen = {}
     self.deluxe_profile_restore_in_flight = {}
     self.deluxe_profile_restore_seen = {}
+    self.client_notice_in_flight = {}
+    self.client_notice_scheduled = {}
     ensureReaderMenuOrder()
 
     -- Register first so an initialization failure cannot make the plugin vanish
@@ -765,6 +768,83 @@ function ProgressSyncDeluxe:newClient(server)
     }
 end
 
+function ProgressSyncDeluxe:serverSupportsClientNotices(server)
+    local capabilities = server and server.capabilities or {}
+    return capabilities.client_notices == true
+        and (tonumber(capabilities.client_notices_version) or 0) >= 1
+end
+
+function ProgressSyncDeluxe:refreshClientNotices(server)
+    if not self.store or not server or server.enabled == false or not self:serverSupportsClientNotices(server) then return end
+    self.client_notice_in_flight = self.client_notice_in_flight or {}
+    if self.client_notice_in_flight[server.id] then return end
+    self.client_notice_in_flight[server.id] = true
+    self:newClient(server):getClientNotices(server.username, server.userkey, function(ok, status, body)
+        self.client_notice_in_flight[server.id] = nil
+        if status == 404 or status == 405 then
+            self.store:setCapability(server.id, "client_notices", false)
+            self.store:saveClientNotices(server.id, {}, os.time())
+            return
+        end
+        if not ok or status ~= 200 then
+            if DiagnosticLog then DiagnosticLog.log("client notices failure", serverLabel(server), "status", status, "body", body) end
+            return
+        end
+        local data = decode(body) or {}
+        local notices = type(data.notices) == "table" and data.notices or {}
+        local now = os.time()
+        local state = self.store:saveClientNotices(server.id, notices, now)
+        local due = {}
+        local due_needs_attention = false
+        for _, notice in ipairs(notices) do
+            if type(notice) == "table" and type(notice.id) == "string" and notice.id ~= "" then
+                local severity = tostring(notice.severity or "info")
+                local last_shown = tonumber(state.last_shown[notice.id]) or 0
+                if now - last_shown >= CLIENT_NOTICE_REPEAT_SECONDS then
+                    due[#due + 1] = notice
+                    if severity == "warning" or severity == "error" then due_needs_attention = true end
+                end
+            end
+        end
+        if #due == 0 then return end
+        local lines = {}
+        for _, notice in ipairs(due) do
+            self.store:markClientNoticeShown(server.id, notice.id, now)
+            local title = tostring(notice.title or "")
+            local message = tostring(notice.message or "")
+            if title ~= "" and message ~= "" then
+                lines[#lines + 1] = title .. ": " .. message
+            elseif message ~= "" then
+                lines[#lines + 1] = message
+            elseif title ~= "" then
+                lines[#lines + 1] = title
+            end
+        end
+        if #lines == 0 then return end
+        local heading = due_needs_attention
+            and T(_("%1 synced, but the server needs attention:"), serverLabel(server))
+            or T(_("%1 has a server notice:"), serverLabel(server))
+        local message = heading .. "\n\n" .. table.concat(lines, "\n\n")
+        local options = { text = message }
+        if not due_needs_attention then options.timeout = 6 end
+        UIManager:show(InfoMessage:new(options))
+    end)
+end
+
+function ProgressSyncDeluxe:scheduleClientNoticesRefresh(server, delay)
+    if not self.store or not server or not self:serverSupportsClientNotices(server) then return end
+    self.client_notice_scheduled = self.client_notice_scheduled or {}
+    if self.client_notice_scheduled[server.id] then return end
+    local action
+    action = function()
+        if self.client_notice_scheduled[server.id] ~= action then return end
+        self.client_notice_scheduled[server.id] = nil
+        self:refreshClientNotices(server)
+    end
+    self.client_notice_scheduled[server.id] = action
+    UIManager:scheduleIn(tonumber(delay) or 1, action)
+end
+
 function ProgressSyncDeluxe:cancelQueueRetry()
     if not self.progress_lifecycle_controller then return end
     return self.progress_lifecycle_controller:cancelQueueRetry()
@@ -877,6 +957,7 @@ function ProgressSyncDeluxe:pushAll(interactive)
                     end
                     self:heartbeatDevice(server, nil, false)
                     self:nudgeOptionalData(server, payload.document, false)
+                    self:scheduleClientNoticesRefresh(server, 1)
 
                     done()
                 elseif is_metadata_probe and (status == 400 or status == 404 or status == 422) then
@@ -1074,7 +1155,10 @@ function ProgressSyncDeluxe:pullAll(interactive)
         self:newClient(server):getProgress(server.username, server.userkey, request.document, function(ok, status, body)
             local data = decode(body) or {}
             local has_remote_record = status == 200 and (data.progress ~= nil or data.percentage ~= nil or data.timestamp ~= nil)
-            if ok and status == 200 then self:nudgeOptionalData(server, request.document, false) end
+            if ok and status == 200 then
+                self:nudgeOptionalData(server, request.document, false)
+                self:scheduleClientNoticesRefresh(server, 1)
+            end
             if DiagnosticLog then
                 DiagnosticLog.log(
                     "pull result",
@@ -1975,7 +2059,11 @@ function ProgressSyncDeluxe:showServers()
     local page
     page = ServersPage:new{
         servers = self.store:listServers(),
-        label_fn = serverLabel,
+        label_fn = function(server)
+            local label = serverLabel(server)
+            if self.store and self.store:serverNeedsAttention(server.id) then return "⚠ " .. label end
+            return label
+        end,
         plugin_version = PLUGIN_VERSION,
         on_close = function(current)
             self.servers_page = nil

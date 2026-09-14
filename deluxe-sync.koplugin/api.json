@@ -64,6 +64,11 @@
       "method": "GET",
       "expected_status": [200, 404, 405]
     },
+    "client_notices": {
+      "path": "/api/v1/client-notices",
+      "method": "GET",
+      "expected_status": [200, 401, 404, 405]
+    },
     "register_device": {
       "path": "/api/v1/devices/current",
       "method": "PUT",
