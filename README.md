@@ -2,7 +2,7 @@
 
 Deluxe-Sync is a KOReader plugin that extends the built-in KOSync workflow to multiple independent KOReader-compatible servers.
 
-Current plugin version: **0.2.0.0**
+Current plugin version: **0.2.0.1**
 
 - Enhanced Techy-Notes servers can register one durable physical device using the existing Deluxe device ID plus KOReader UUID/model/platform/version metadata; unsupported KOSync servers are unchanged.
 - Enhanced servers advertising annotation sync v1 can synchronize KOReader highlights, notes, and bookmarks with stable IDs, revision conflicts, and deletion tombstones; ordinary KOSync servers receive no annotation traffic.
@@ -133,12 +133,13 @@ When metadata is enabled for a compatible server, Deluxe-Sync extends the standa
   "metadata": {
     "filename": "Destroyer of Worlds.epub",
     "title": "Destroyer of Worlds",
-    "authors": "Matt Ruff"
+    "authors": "Matt Ruff",
+    "asin": "B0DTT5LV77"
   }
 }
 ```
 
-The metadata extension currently contains exactly `filename`, `title`, and `authors`. If metadata is disabled or the server is detected as metadata-incompatible, Deluxe-Sync falls back to the standard payload.
+The metadata extension contains `filename`, `title`, and `authors`, plus a normalized `asin` when KOReader exposes an explicitly labeled ASIN in the document properties or identifiers. Deluxe-Sync does not guess that an unlabeled 10-character identifier is an ASIN, which avoids confusing ISBN-10 values with Amazon identifiers. ASIN remains part of the existing Book Metadata sharing choice; if metadata is disabled or the server is detected as metadata-incompatible, Deluxe-Sync falls back to the standard payload.
 
 ### Rich reading position on capable servers
 

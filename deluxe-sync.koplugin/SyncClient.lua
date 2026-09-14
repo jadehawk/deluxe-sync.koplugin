@@ -4,7 +4,8 @@ local socketutil = require("socketutil")
 local DiagnosticLog = require("DiagnosticLog")
 local UrlUtil = require("UrlUtil")
 
-local PROGRESS_TIMEOUTS = { 2, 5 }
+local PROGRESS_TIMEOUTS = { 5, 20 }
+local TIGHT_FALLBACK_TIMEOUTS = { 2, 5 }
 local SYNC_FALLBACK_TIMEOUTS = { 5, 15 }
 local AUTH_TIMEOUTS = { 5, 10 }
 local BACKGROUND_POLL_INTERVAL = 0.25
@@ -266,7 +267,7 @@ function SyncClient:_async(method, username, userkey, params, callback, public_r
     end
 
     local function runTightSynchronousFallback()
-        socketutil:set_timeout(PROGRESS_TIMEOUTS[1], PROGRESS_TIMEOUTS[2])
+        socketutil:set_timeout(TIGHT_FALLBACK_TIMEOUTS[1], TIGHT_FALLBACK_TIMEOUTS[2])
         local ok, res = pcall(function() return self.client[method](self.client, params or {}) end)
         socketutil:reset_timeout()
         if ok then

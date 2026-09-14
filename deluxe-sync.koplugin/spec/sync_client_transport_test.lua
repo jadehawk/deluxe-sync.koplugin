@@ -135,6 +135,18 @@ assert(captured_timeouts[2] and captured_timeouts[2][1] == 5 and captured_timeou
     "successful background LuaSec request must keep the 5/15 timeout budget")
 assert(reset_count == 2, "child socket timeout must be reset after every request")
 
+ui_manager.looper = {}
+local looper_callback_called = false
+client:updateProgress("reader", "key", { document = "looper" }, function(ok, status)
+    looper_callback_called = true
+    assert(ok == true and status == 200, "KOReader looper transport must preserve successful progress responses")
+end)
+assert(looper_callback_called, "KOReader looper transport must complete the progress callback")
+assert(captured_timeouts[3] and captured_timeouts[3][1] == 5 and captured_timeouts[3][2] == 20,
+    "KOReader looper progress requests must allow the 5/20 timeout budget")
+assert(subprocess_count == 2, "KOReader looper transport must not fork the background fallback")
+ui_manager.looper = nil
+
 local capability_callback_called = false
 client:capabilitiesAsync(function(ok, status, body)
     capability_callback_called = true
