@@ -2705,30 +2705,16 @@ function ProgressSyncDeluxe:testServer(server, options)
     local capability_ok, capability_status, capability_body = client:capabilities()
     local capability_data = decode(capability_body)
     local enhanced_capabilities = capability_ok and capability_status == 200 and type(capability_data) == "table" and capability_data.capabilities or nil
-    local logical_supported = type(enhanced_capabilities) == "table" and enhanced_capabilities.logical_books == true and enhanced_capabilities.logical_library == true
-    local rich_position_version = type(enhanced_capabilities) == "table" and tonumber(enhanced_capabilities.rich_position_version) or nil
-    local rich_supported = type(enhanced_capabilities) == "table"
-        and enhanced_capabilities.rich_progress == true
-        and (rich_position_version or 0) >= 1
-    local device_registration_version = type(enhanced_capabilities) == "table" and tonumber(enhanced_capabilities.device_registration_version) or nil
-    local device_supported = type(enhanced_capabilities) == "table"
-        and enhanced_capabilities.device_registration == true
-        and (device_registration_version or 0) >= 1
-    local annotation_version = type(enhanced_capabilities) == "table" and tonumber(enhanced_capabilities.annotations_version) or nil
-    local annotation_supported = type(enhanced_capabilities) == "table"
-        and enhanced_capabilities.annotations == true
-        and (annotation_version or 0) >= 1
-    local reading_statistics_supported = self:cacheReadingStatisticsCapabilities(server, enhanced_capabilities)
-    local vocabulary_supported = self:cacheVocabularyCapabilities(server, enhanced_capabilities)
-    local settings_backup_supported = self:cacheSettingsBackupCapabilities(server, enhanced_capabilities)
-    self.store:setCapability(server.id, "logical_books", logical_supported)
-    self.store:setCapability(server.id, "logical_library", logical_supported)
-    self.store:setCapability(server.id, "rich_progress", rich_supported)
-    self.store:setCapability(server.id, "rich_position_version", rich_position_version)
-    self.store:setCapability(server.id, "device_registration", device_supported)
-    self.store:setCapability(server.id, "device_registration_version", device_registration_version)
-    self.store:setCapability(server.id, "annotations", annotation_supported)
-    self.store:setCapability(server.id, "annotations_version", annotation_version)
+    self:cacheEnhancedCapabilities(server, enhanced_capabilities)
+    server = self.store:getServer(server.id) or server
+    local cached_capabilities = server.capabilities or {}
+    local logical_supported = cached_capabilities.logical_books == true and cached_capabilities.logical_library == true
+    local rich_supported = cached_capabilities.rich_progress == true
+    local device_supported = cached_capabilities.device_registration == true
+    local annotation_supported = cached_capabilities.annotations == true
+    local reading_statistics_supported = self:serverSupportsReadingStatistics(server)
+    local vocabulary_supported = self:serverSupportsVocabulary(server)
+    local settings_backup_supported = self:serverSupportsSettingsBackups(server)
     if recovery_supported and server.email and server.email ~= "" then
         local email_ok, email_status, email_body = client:setRecoveryEmail(server.username, server.userkey, server.email)
         DiagnosticLog.log("recovery email enrollment result", server.url or "", "username", server.username or "", "email", server.email, "status", email_status or "nil", "ok", email_ok, "body", email_body or "")

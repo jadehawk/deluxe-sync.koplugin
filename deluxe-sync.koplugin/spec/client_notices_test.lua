@@ -35,6 +35,7 @@ contains(store, "if not live_ids[notice_id] then state.last_shown[notice_id] = n
 contains(main, "local CLIENT_NOTICE_REPEAT_SECONDS = 24 * 60 * 60", "notice repeat suppression must remain 24 hours")
 contains(main, "function ProgressSyncDeluxe:refreshClientNotices(server)", "client notice refresh flow missing")
 contains(main, "function ProgressSyncDeluxe:scheduleClientNoticesRefresh(server, delay)", "post-sync notice scheduler missing")
+contains(main, "self:cacheEnhancedCapabilities(server, enhanced_capabilities)", "Authenticate / Sign in must cache the complete enhanced capability set, including client notices")
 contains(main, "local due_needs_attention = false", "popup persistence must be based only on notices due now")
 contains(main, "self.store:markClientNoticeShown(server.id, notice.id, now)", "displayed notices must persist their shown timestamp")
 contains(main, 'return "⚠ " .. label', "servers page must keep a persistent attention marker")
