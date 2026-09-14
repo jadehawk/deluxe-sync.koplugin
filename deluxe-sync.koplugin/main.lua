@@ -70,6 +70,7 @@ local UrlUtil
 local ResponseUtil
 local Resolver
 local LocalLibrary
+local DocumentMetadataAdapter
 local AnnotationAdapter
 local ReadingStatisticsAdapter
 local VocabularyAdapter
@@ -257,6 +258,7 @@ function ProgressSyncDeluxe:init()
         ResponseUtil = require("ResponseUtil")
         Resolver = require("Resolver")
         LocalLibrary = require("LocalLibrary")
+        DocumentMetadataAdapter = require("DocumentMetadataAdapter")
         AnnotationAdapter = require("AnnotationAdapter")
         ReadingStatisticsAdapter = require("ReadingStatisticsAdapter")
         VocabularyAdapter = require("VocabularyAdapter")
@@ -414,6 +416,7 @@ function ProgressSyncDeluxe:getMetadata()
         filename = self:getFileName(),
         title = props.display_title,
         authors = props.authors,
+        asin = DocumentMetadataAdapter and DocumentMetadataAdapter.extractAsin(self.ui) or nil,
     }
 end
 

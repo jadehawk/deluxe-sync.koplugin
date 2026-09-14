@@ -134,6 +134,12 @@ function ProgressLifecycleController:retryQueue(interactive, complete_callback, 
         return
     end
 
+    local retry_message
+    if interactive then
+        retry_message = InfoMessage:new{ text = _("Queued updates are being retried.") }
+        UIManager:show(retry_message)
+    end
+
     local pending = 0
     local scan_complete = false
     local completion_called = false
@@ -141,6 +147,10 @@ function ProgressLifecycleController:retryQueue(interactive, complete_callback, 
         if completion_called then return end
         completion_called = true
         self:scheduleQueueRetry()
+        if retry_message then
+            UIManager:close(retry_message)
+            retry_message = nil
+        end
         if complete_callback then complete_callback() end
     end
     local function done()
@@ -207,7 +217,6 @@ function ProgressLifecycleController:retryQueue(interactive, complete_callback, 
     end
     scan_complete = true
     if pending == 0 then finish() end
-    if interactive then UIManager:show(InfoMessage:new{ text = _("Queued updates are being retried.") }) end
 end
 
 function ProgressLifecycleController:scheduleAutomaticUpdateCheck()

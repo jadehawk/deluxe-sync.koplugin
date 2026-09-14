@@ -36,6 +36,8 @@ contains(store, "function ServerStore:getVocabularyState(server_id)", "per-serve
 contains(main, 'title = T(_("Data shared with %1"), serverLabel(server))', "data-sharing choices must identify which server they apply to")
 contains(main, '_("Reading Progress: On (required)")', "reading progress must remain visibly always on")
 contains(main, 'label = _("Book Metadata")', "existing metadata choice must remain visible")
+contains(main, 'DocumentMetadataAdapter = require("DocumentMetadataAdapter")', "Book Metadata must load the document identifier adapter")
+contains(main, 'asin = DocumentMetadataAdapter and DocumentMetadataAdapter.extractAsin(self.ui) or nil,', "Book Metadata must include a normalized explicit ASIN when KOReader exposes one")
 contains(main, 'label = _("Annotations / Highlights / Notes")', "annotation sharing choice missing")
 contains(main, 'label = _("Reading Statistics")', "statistics sharing choice missing")
 contains(main, 'label = _("KOReader Settings Backup")', "KOReader settings backup choice missing")

@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.0.1] - 2026-09-14
+
+- Added conservative ASIN extraction from KOReader document metadata. Explicitly labeled `asin`, `mobi-asin`, and Amazon-ASIN forms are normalized to uppercase and included in the existing Book Metadata payload for compatible servers.
+- Unlabeled 10-character identifiers are never guessed to be ASINs, preventing ISBN-10 values from being misclassified.
+- Existing Book Metadata consent, metadata compatibility fallback, and ordinary KOSync behavior remain unchanged.
+
 ## [0.2.0.0] - 2026-09-13
 
 Deluxe-Sync 0.2.0.0 is a major roll-up release containing all improvements made since the public 0.1.2 release. Standard KOSync progress syncing remains compatible with ordinary KOSync servers; the additional features below are used only when a server advertises support for them.
