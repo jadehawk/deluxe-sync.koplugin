@@ -417,6 +417,8 @@ function ProgressSyncDeluxe:getMetadata()
         title = props.display_title,
         authors = props.authors,
         asin = DocumentMetadataAdapter and DocumentMetadataAdapter.extractAsin(self.ui) or nil,
+        series = DocumentMetadataAdapter and DocumentMetadataAdapter.extractSeries(self.ui) or nil,
+        series_index = DocumentMetadataAdapter and DocumentMetadataAdapter.extractSeriesIndex(self.ui) or nil,
     }
 end
 

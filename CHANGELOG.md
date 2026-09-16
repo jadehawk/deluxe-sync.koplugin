@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.0.2] - 2026-09-16
+
+- Added KOReader book series metadata to the existing Book Metadata payload for compatible servers. Deluxe-Sync now sends series and numeric series_index values when KOReader exposes them.
+- Saved KOReader doc_props remain authoritative, with document properties used as a fallback. Zero and decimal series indexes are preserved, while invalid indexes are omitted.
+- Existing Book Metadata consent, capability checks, retry sanitization, and standard KOSync compatibility remain unchanged; unsupported servers do not receive the new metadata fields.
+
 ## [0.2.0.1] - 2026-09-14
 
 - Added conservative ASIN extraction from KOReader document metadata. Explicitly labeled `asin`, `mobi-asin`, and Amazon-ASIN forms are normalized to uppercase and included in the existing Book Metadata payload for compatible servers.

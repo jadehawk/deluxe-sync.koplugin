@@ -16,20 +16,36 @@ assert(DocumentMetadataAdapter.extractAsinFromIdentifiers("B0DTT5LV77") == nil, 
 assert(DocumentMetadataAdapter.extractAsinFromIdentifiers("isbn:0306406152") == nil, "ISBN-10 values must never be guessed as ASINs")
 assert(DocumentMetadataAdapter.extractAsinFromIdentifiers({ "0306406152" }) == nil, "unlabeled table values must never be guessed as ASINs")
 
+assert(DocumentMetadataAdapter.normalizeSeriesIndex(" 3 ") == 3, "numeric string series indexes must normalize")
+assert(DocumentMetadataAdapter.normalizeSeriesIndex("1.5") == 1.5, "decimal series indexes must be preserved")
+assert(DocumentMetadataAdapter.normalizeSeriesIndex(0) == 0, "series index zero must remain valid")
+assert(DocumentMetadataAdapter.normalizeSeriesIndex("not-a-number") == nil, "invalid series indexes must be ignored")
+
 local ui = {
     document = {
         getProps = function()
             return {
                 identifiers = "isbn:9780553813227; mobi-asin:b0dtt5lv77",
+                series = "Raw Series",
+                series_index = "2.5",
             }
         end,
     },
     doc_props = {
         display_title = "Example Book",
         authors = "Example Author",
+        series = " Saved Series ",
+        series_index = "3",
     },
 }
 assert(DocumentMetadataAdapter.extractAsin(ui) == "B0DTT5LV77", "KOReader document:getProps identifiers must feed ASIN extraction")
+assert(DocumentMetadataAdapter.extractSeries(ui) == "Saved Series", "saved KOReader series metadata should take precedence and be trimmed")
+assert(DocumentMetadataAdapter.extractSeriesIndex(ui) == 3, "saved KOReader series index should take precedence")
+
+ui.doc_props.series = nil
+ui.doc_props.series_index = nil
+assert(DocumentMetadataAdapter.extractSeries(ui) == "Raw Series", "document:getProps series must be used as fallback")
+assert(DocumentMetadataAdapter.extractSeriesIndex(ui) == 2.5, "document:getProps series index must be used as fallback")
 
 ui.document.getProps = function()
     error("unsupported")

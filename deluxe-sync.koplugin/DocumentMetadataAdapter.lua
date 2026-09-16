@@ -106,4 +106,28 @@ function DocumentMetadataAdapter.extractAsin(ui)
         or DocumentMetadataAdapter.extractAsinFromIdentifiers(props.identifiers)
 end
 
+function DocumentMetadataAdapter.extractSeries(ui)
+    if type(ui) ~= "table" then return nil end
+
+    local props = type(ui.doc_props) == "table" and ui.doc_props or {}
+    local raw = rawProps(ui)
+    return trim(props.series) or trim(raw.series)
+end
+
+function DocumentMetadataAdapter.normalizeSeriesIndex(value)
+    local number = tonumber(value)
+    if number == nil or number ~= number or number == math.huge or number == -math.huge then return nil end
+    return number
+end
+
+function DocumentMetadataAdapter.extractSeriesIndex(ui)
+    if type(ui) ~= "table" then return nil end
+
+    local props = type(ui.doc_props) == "table" and ui.doc_props or {}
+    local raw = rawProps(ui)
+    local local_index = DocumentMetadataAdapter.normalizeSeriesIndex(props.series_index)
+    if local_index ~= nil then return local_index end
+    return DocumentMetadataAdapter.normalizeSeriesIndex(raw.series_index)
+end
+
 return DocumentMetadataAdapter
