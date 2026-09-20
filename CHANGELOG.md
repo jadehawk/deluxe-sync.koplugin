@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.0.3] - 2026-09-20
+
+- Fixed annotation synchronization getting permanently blocked when the client remembered a revision for an annotation the server no longer knew. Deluxe-Sync now repairs that stale state, retries the affected annotation from revision zero, and continues uploading newer highlights, notes, and bookmarks instead of failing the whole batch with HTTP 422.
+- Added a debounced `AnnotationsModified` hook so newly created or edited KOReader annotations are pushed promptly rather than waiting for a later progress-sync lifecycle event.
+- Suppressed the plugin's own `AnnotationsModified` notification during remote annotation application so server updates do not create an upload feedback loop.
+- Preserved the last confirmed enhanced-server capability set across transient capability-request failures, while still clearing capabilities for definitive unsupported responses.
+- Added clearer annotation-sync diagnostic logging for sharing-disabled, capability-unavailable, offline, in-flight, and stale-revision recovery paths.
+
 ## [0.2.0.2] - 2026-09-16
 
 - Added KOReader book series metadata to the existing Book Metadata payload for compatible servers. Deluxe-Sync now sends series and numeric series_index values when KOReader exposes them.

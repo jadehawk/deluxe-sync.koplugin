@@ -257,10 +257,9 @@ function EnhancedDataSyncController:refreshEnhancedCapabilitiesAsync(server, cli
             return
         end
         if not ok or status ~= 200 or type(data) ~= "table" or type(data.capabilities) ~= "table" then
-            -- Lifecycle refreshes fail closed: progress sync remains available, but
-            -- enhanced/background features stay dormant until capabilities can be
-            -- confirmed on a later refresh. This also prevents repeated probes.
-            self:cacheEnhancedCapabilities(server, nil)
+            -- Preserve the last confirmed capability set across transient network,
+            -- authentication, or malformed-response failures. A definitive 404/405
+            -- still clears enhanced capabilities above.
             callback(false, status)
             return
         end

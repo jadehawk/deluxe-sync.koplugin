@@ -2832,6 +2832,11 @@ function ProgressSyncDeluxe:onPageUpdate(page)
     return self.progress_lifecycle_controller:onPageUpdate(page)
 end
 
+function ProgressSyncDeluxe:onAnnotationsModified()
+    if not self.annotation_sync_service then return end
+    return self.annotation_sync_service:onAnnotationsModified()
+end
+
 function ProgressSyncDeluxe:onResume()
     if not self.progress_lifecycle_controller then return end
     return self.progress_lifecycle_controller:onResume()
