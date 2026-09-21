@@ -21,8 +21,8 @@ local function contains(source, text, message)
     assert(source:find(text, 1, true), message or ("missing data-sharing privacy contract: " .. text))
 end
 
-contains(store, "ServerStore.DATA_SHARING_VERSION = 2", "Vocabulary consent must advance the data-sharing schema so existing users review the new categories")
-contains(store, 'for _, field in ipairs({ "annotations_enabled", "reading_statistics_enabled", "settings_backup_enabled", "deluxe_config_backup_enabled", "vocabulary_enabled", "vocabulary_context_enabled" }) do', "legacy enhanced-data categories must migrate to explicit safe defaults")
+contains(store, "ServerStore.DATA_SHARING_VERSION = 3", "Ratings & Reviews consent must advance the data-sharing schema so existing users review the new category")
+contains(store, 'for _, field in ipairs({ "book_feedback_enabled", "annotations_enabled", "reading_statistics_enabled", "settings_backup_enabled", "deluxe_config_backup_enabled", "vocabulary_enabled", "vocabulary_context_enabled" }) do', "legacy enhanced-data categories must migrate to explicit safe defaults")
 contains(store, "server[field] = false", "legacy enhanced-data sharing must default off")
 contains(store, "function ServerStore:getServersNeedingDataSharingReview()", "legacy servers must remain discoverable for one-time review")
 contains(store, "server.annotations_enabled = server.annotations_enabled == true", "annotation consent must persist as an explicit boolean")

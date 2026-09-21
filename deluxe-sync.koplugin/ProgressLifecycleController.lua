@@ -166,7 +166,12 @@ function ProgressLifecycleController:retryQueue(interactive, complete_callback, 
             local strip_metadata = payload.metadata ~= nil
                 and (server.metadata_enabled == false or (server.capabilities and server.capabilities.metadata_compatible == false))
             local strip_position = payload.position ~= nil and not owner:serverSupportsRichProgress(server)
-            if strip_metadata or strip_position then
+            local has_book_feedback = payload.rating_present ~= nil
+                or payload.rating ~= nil
+                or payload.review_note_present ~= nil
+                or payload.review_note ~= nil
+            local strip_book_feedback = has_book_feedback and not owner:serverSupportsBookFeedback(server)
+            if strip_metadata or strip_position or strip_book_feedback then
                 local sanitized = {
                     document = payload.document,
                     progress = payload.progress,
@@ -176,6 +181,12 @@ function ProgressLifecycleController:retryQueue(interactive, complete_callback, 
                 }
                 if not strip_metadata then sanitized.metadata = payload.metadata end
                 if not strip_position then sanitized.position = payload.position end
+                if not strip_book_feedback then
+                    sanitized.rating_present = payload.rating_present
+                    sanitized.rating = payload.rating
+                    sanitized.review_note_present = payload.review_note_present
+                    sanitized.review_note = payload.review_note
+                end
                 payload = sanitized
                 item.payload = payload
                 owner.queue:save()

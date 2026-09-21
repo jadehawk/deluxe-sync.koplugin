@@ -222,6 +222,7 @@ function DeluxeProfileAdapter.apply(store, profile)
         server.enabled = portable.enabled ~= false
         server.metadata_enabled = portable.metadata_enabled ~= false
         server.data_sharing_version = existing and math.max(0, math.floor(tonumber(existing.data_sharing_version) or 0)) or 0
+        server.book_feedback_enabled = existing and existing.book_feedback_enabled == true or false
         server.annotations_enabled = existing and existing.annotations_enabled == true or false
         server.reading_statistics_enabled = existing and existing.reading_statistics_enabled == true or false
         server.settings_backup_enabled = existing and existing.settings_backup_enabled == true or false

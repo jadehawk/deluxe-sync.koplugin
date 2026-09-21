@@ -71,6 +71,7 @@ local ResponseUtil
 local Resolver
 local LocalLibrary
 local DocumentMetadataAdapter
+local BookFeedbackAdapter
 local AnnotationAdapter
 local ReadingStatisticsAdapter
 local VocabularyAdapter
@@ -259,6 +260,7 @@ function ProgressSyncDeluxe:init()
         Resolver = require("Resolver")
         LocalLibrary = require("LocalLibrary")
         DocumentMetadataAdapter = require("DocumentMetadataAdapter")
+        BookFeedbackAdapter = require("BookFeedbackAdapter")
         AnnotationAdapter = require("AnnotationAdapter")
         ReadingStatisticsAdapter = require("ReadingStatisticsAdapter")
         VocabularyAdapter = require("VocabularyAdapter")
@@ -422,6 +424,25 @@ function ProgressSyncDeluxe:getMetadata()
     }
 end
 
+function ProgressSyncDeluxe:getBookFeedback()
+    if not BookFeedbackAdapter then return {} end
+    return BookFeedbackAdapter.extract(self.ui)
+end
+
+function ProgressSyncDeluxe:applyBookFeedbackToPayload(server, payload, feedback)
+    if not self:serverSupportsBookFeedback(server) or type(feedback) ~= "table" then return payload end
+
+    if feedback.rating_present == true then
+        payload.rating_present = true
+        if feedback.rating ~= nil then payload.rating = feedback.rating end
+    end
+    if feedback.review_note_present == true then
+        payload.review_note_present = true
+        if feedback.review_note ~= nil then payload.review_note = feedback.review_note end
+    end
+    return payload
+end
+
 function ProgressSyncDeluxe:getCurrentProgress()
     if self.ui.document.info.has_pages then
         return self.ui.paging:getLastProgress(), self.ui.paging:getLastPercent()
@@ -459,6 +480,14 @@ function ProgressSyncDeluxe:serverSupportsRichProgress(server)
     local capabilities = server and server.capabilities or {}
     return capabilities.rich_progress == true
         and (tonumber(capabilities.rich_position_version) or 0) >= 1
+end
+
+function ProgressSyncDeluxe:serverSupportsBookFeedback(server)
+    local capabilities = server and server.capabilities or {}
+    return server ~= nil
+        and server.book_feedback_enabled == true
+        and capabilities.book_feedback == true
+        and (tonumber(capabilities.book_feedback_version) or 0) >= 1
 end
 
 function ProgressSyncDeluxe:serverSupportsDeviceRegistration(server)
@@ -733,6 +762,8 @@ function ProgressSyncDeluxe:getDeviceRegistrationPayload()
             standard_kosync = true,
             rich_progress = true,
             logical_books = true,
+            book_feedback = true,
+            book_feedback_version = 1,
             device_registration = true,
             annotations = true,
             reading_statistics = true,
@@ -887,6 +918,7 @@ function ProgressSyncDeluxe:pushAll(interactive)
     local progress, percentage = self:getCurrentProgress()
     local metadata = self:getMetadata()
     local rich_position = self:getRichPosition(progress, percentage)
+    local book_feedback = self:getBookFeedback()
     local servers = self.store:getEnabledServers()
     local pending = #servers
     local success, queued, failed, not_tracked = 0, 0, 0, 0
@@ -921,6 +953,8 @@ function ProgressSyncDeluxe:pushAll(interactive)
         if self:serverSupportsRichProgress(server) and rich_position then
             payload.position = rich_position
         end
+
+        self:applyBookFeedbackToPayload(server, payload, book_feedback)
 
         local function finalizeFailure(status, body, failed_payload)
             if isBookNotFoundResponse(status, body) then
@@ -978,6 +1012,10 @@ function ProgressSyncDeluxe:pushAll(interactive)
                     if self:serverSupportsRichProgress(server) and current_payload.position ~= nil then
                         fallback_payload.position = current_payload.position
                     end
+                    if current_payload.rating_present ~= nil then fallback_payload.rating_present = current_payload.rating_present end
+                    if current_payload.rating ~= nil then fallback_payload.rating = current_payload.rating end
+                    if current_payload.review_note_present ~= nil then fallback_payload.review_note_present = current_payload.review_note_present end
+                    if current_payload.review_note ~= nil then fallback_payload.review_note = current_payload.review_note end
                     send(fallback_payload, false)
                 else
                     finalizeFailure(status, body, current_payload)
@@ -996,6 +1034,7 @@ function ProgressSyncDeluxe:queueCurrentProgress()
     if not canonical_document or progress == nil then return end
     local metadata = self:getMetadata()
     local rich_position = self:getRichPosition(progress, percentage)
+    local book_feedback = self:getBookFeedback()
     for unused_index, server in ipairs(self.store:getEnabledServers()) do
         local document = self:getServerDocumentDigest(server) or canonical_document
         local payload = {
@@ -1012,6 +1051,7 @@ function ProgressSyncDeluxe:queueCurrentProgress()
         if self:serverSupportsRichProgress(server) and rich_position then
             payload.position = rich_position
         end
+        self:applyBookFeedbackToPayload(server, payload, book_feedback)
         self:queueForServer(server, {
             server_id = server.id,
             document = document,
@@ -2048,6 +2088,7 @@ function ProgressSyncDeluxe:serverFromSettingsDraft(draft, password, require_pas
         enabled = draft.enabled ~= false,
         metadata_enabled = draft.metadata_enabled ~= false,
         data_sharing_version = ServerStore.DATA_SHARING_VERSION,
+        book_feedback_enabled = draft.book_feedback_enabled == true,
         annotations_enabled = draft.annotations_enabled == true,
         reading_statistics_enabled = draft.reading_statistics_enabled == true,
         settings_backup_enabled = draft.settings_backup_enabled == true,
@@ -2114,6 +2155,7 @@ function ProgressSyncDeluxe:showDataSharingDialog(server, on_save, on_cancel)
     server = server or {}
     local values = {
         metadata_enabled = server.metadata_enabled ~= false,
+        book_feedback_enabled = server.book_feedback_enabled == true,
         annotations_enabled = server.annotations_enabled == true,
         reading_statistics_enabled = server.reading_statistics_enabled == true,
         settings_backup_enabled = server.settings_backup_enabled == true,
@@ -2124,6 +2166,7 @@ function ProgressSyncDeluxe:showDataSharingDialog(server, on_save, on_cancel)
     local dialog
     local labels = {
         { id = "metadata_sharing", field = "metadata_enabled", label = _("Book Metadata") },
+        { id = "book_feedback_sharing", field = "book_feedback_enabled", label = _("Ratings & Reviews") },
         { id = "annotation_sharing", field = "annotations_enabled", label = _("Annotations / Highlights / Notes") },
         { id = "statistics_sharing", field = "reading_statistics_enabled", label = _("Reading Statistics") },
         { id = "settings_sharing", field = "settings_backup_enabled", label = _("KOReader Settings Backup") },
@@ -2151,7 +2194,11 @@ function ProgressSyncDeluxe:showDataSharingDialog(server, on_save, on_cancel)
         local button = dialog:getButtonById(item.id)
         if button then button:setText(buttonText(item), button.width) end
         UIManager:setDirty(dialog, "ui")
-        if item.field == "deluxe_config_backup_enabled" and values[item.field] then
+        if item.field == "book_feedback_enabled" and values[item.field] then
+            UIManager:show(InfoMessage:new{
+                text = _("Ratings & Reviews can include your personal rating and private KOReader review note. Enable this only if you want those stored on this server."),
+            })
+        elseif item.field == "deluxe_config_backup_enabled" and values[item.field] then
             UIManager:show(InfoMessage:new{
                 text = _("Deluxe-Sync Config Backup includes your configured server URLs, usernames, and saved authentication keys. Enable it only for a server you trust to hold your complete Deluxe-Sync setup."),
             })

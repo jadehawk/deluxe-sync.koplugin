@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.0.4] - 2026-09-21
+
+- Added first-class KOReader completion feedback synchronization for supported enhanced servers, including half-star ratings and the private completion review Note.
+- Added an explicit per-server **Ratings & Reviews** sharing control that is fail-closed for existing servers and rechecked before queued/retried sends.
+- Preserved feedback privacy and backward compatibility: unsupported servers receive no rating/review fields, and ordinary KOSync behavior is unchanged.
+
 ## [0.2.0.3] - 2026-09-20
 
 - Fixed annotation synchronization getting permanently blocked when the client remembered a revision for an annotation the server no longer knew. Deluxe-Sync now repairs that stale state, retries the affected annotation from revision zero, and continues uploading newer highlights, notes, and bookmarks instead of failing the whole batch with HTTP 422.

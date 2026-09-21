@@ -44,8 +44,8 @@
       "path": "/syncs/progress",
       "method": "PUT",
       "required_params": ["document", "progress", "percentage", "device", "device_id"],
-      "optional_params": ["metadata", "position"],
-      "payload": ["document", "metadata", "position", "progress", "percentage", "device", "device_id"],
+      "optional_params": ["metadata", "position", "rating", "rating_present", "review_note", "review_note_present"],
+      "payload": ["document", "metadata", "position", "rating", "rating_present", "review_note", "review_note_present", "progress", "percentage", "device", "device_id"],
       "expected_status": [200, 202, 400, 401, 404, 422]
     },
     "get_progress": {

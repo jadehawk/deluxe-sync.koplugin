@@ -15,8 +15,8 @@ local function contains(source, text, message)
     assert(source:find(text, 1, true), message or ("missing expected rich-progress integration: " .. text))
 end
 
-contains(api, '"optional_params": ["metadata", "position"]', "progress API must accept optional rich position")
-contains(api, '"document", "metadata", "position", "progress"', "progress API must serialize rich position")
+contains(api, '"optional_params": ["metadata", "position",', "progress API must accept optional rich position")
+contains(api, '"document", "metadata", "position",', "progress API must serialize rich position")
 contains(store, 'rich_progress = nil', "server capability cache must include rich progress")
 contains(store, 'rich_position_version = nil', "server capability cache must include rich position version")
 

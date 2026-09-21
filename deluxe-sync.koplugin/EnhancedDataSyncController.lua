@@ -201,6 +201,10 @@ function EnhancedDataSyncController:cacheEnhancedCapabilities(server, enhanced_c
     local annotation_supported = type(enhanced_capabilities) == "table"
         and enhanced_capabilities.annotations == true
         and (annotation_version or 0) >= 1
+    local book_feedback_version = type(enhanced_capabilities) == "table" and tonumber(enhanced_capabilities.book_feedback_version) or nil
+    local book_feedback_supported = type(enhanced_capabilities) == "table"
+        and enhanced_capabilities.book_feedback == true
+        and (book_feedback_version or 0) >= 1
     local client_notices_version = type(enhanced_capabilities) == "table" and tonumber(enhanced_capabilities.client_notices_version) or nil
     local client_notices_supported = type(enhanced_capabilities) == "table"
         and enhanced_capabilities.client_notices == true
@@ -214,6 +218,8 @@ function EnhancedDataSyncController:cacheEnhancedCapabilities(server, enhanced_c
     owner.store:setCapability(server.id, "device_registration_version", device_registration_version)
     owner.store:setCapability(server.id, "annotations", annotation_supported)
     owner.store:setCapability(server.id, "annotations_version", annotation_version)
+    owner.store:setCapability(server.id, "book_feedback", book_feedback_supported)
+    owner.store:setCapability(server.id, "book_feedback_version", book_feedback_version)
     owner.store:setCapability(server.id, "client_notices", client_notices_supported)
     owner.store:setCapability(server.id, "client_notices_version", client_notices_version)
     if not client_notices_supported and owner.store.saveClientNotices then owner.store:saveClientNotices(server.id, {}, os.time()) end

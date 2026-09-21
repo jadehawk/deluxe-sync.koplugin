@@ -7,7 +7,7 @@ local UrlUtil = require("UrlUtil")
 
 local ServerStore = {}
 
-ServerStore.DATA_SHARING_VERSION = 2
+ServerStore.DATA_SHARING_VERSION = 3
 
 local SETTINGS_DIR = DataStorage:getSettingsDir() .. "/deluxe-sync"
 local SETTINGS_FILE = SETTINGS_DIR .. "/settings.lua"
@@ -69,7 +69,7 @@ function ServerStore:new()
             server.data_sharing_version = sharing_version
             servers_changed = true
         end
-        for _, field in ipairs({ "annotations_enabled", "reading_statistics_enabled", "settings_backup_enabled", "deluxe_config_backup_enabled", "vocabulary_enabled", "vocabulary_context_enabled" }) do
+        for _, field in ipairs({ "book_feedback_enabled", "annotations_enabled", "reading_statistics_enabled", "settings_backup_enabled", "deluxe_config_backup_enabled", "vocabulary_enabled", "vocabulary_context_enabled" }) do
             if server[field] ~= true and server[field] ~= false then
                 server[field] = false
                 servers_changed = true
@@ -166,6 +166,7 @@ function ServerStore:upsertServer(server)
     server.enabled = server.enabled ~= false
     server.metadata_enabled = server.metadata_enabled ~= false
     server.data_sharing_version = math.max(0, math.floor(tonumber(server.data_sharing_version) or 0))
+    server.book_feedback_enabled = server.book_feedback_enabled == true
     server.annotations_enabled = server.annotations_enabled == true
     server.reading_statistics_enabled = server.reading_statistics_enabled == true
     server.settings_backup_enabled = server.settings_backup_enabled == true
@@ -180,6 +181,8 @@ function ServerStore:upsertServer(server)
         account_recovery = nil,
         logical_books = nil,
         logical_library = nil,
+        book_feedback = nil,
+        book_feedback_version = nil,
         rich_progress = nil,
         rich_position_version = nil,
         device_registration = nil,
