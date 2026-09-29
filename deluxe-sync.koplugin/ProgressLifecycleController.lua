@@ -76,7 +76,7 @@ function ProgressLifecycleController:scheduleQueueRetry()
     if diagnostic_log then diagnostic_log.log("queue retry scheduled", "seconds", delay, "items", owner.queue:count()) end
 end
 
-function ProgressLifecycleController:retryQueue(interactive, complete_callback, retry_mode)
+function ProgressLifecycleController:retryQueue(interactive, complete_callback, retry_mode, capability_probe_attempted)
     local owner = self.owner
     local diagnostic_log = self.deps.diagnostic_log
     local server_label = assert(self.deps.server_label, "ProgressLifecycleController requires server_label")
@@ -134,6 +134,60 @@ function ProgressLifecycleController:retryQueue(interactive, complete_callback, 
         return
     end
 
+    if capability_probe_attempted ~= true then
+        local unknown_servers = {}
+        local seen_server_ids = {}
+        for item_index, item in ipairs(items) do
+            local server = owner.store:getServer(item.server_id)
+            local capability_state = server and server.capabilities and server.capabilities.progress_event_timestamp
+            if server and server.enabled ~= false and capability_state == nil and not seen_server_ids[server.id] then
+                seen_server_ids[server.id] = true
+                table.insert(unknown_servers, server)
+            end
+        end
+        if #unknown_servers > 0 then
+            local pending_probes = #unknown_servers
+            if diagnostic_log then diagnostic_log.log("queue retry capability preflight", "servers", pending_probes) end
+            local function finishProbe()
+                pending_probes = pending_probes - 1
+                if pending_probes == 0 then
+                    self:retryQueue(interactive, complete_callback, mode, true)
+                end
+            end
+            for server_index, server in ipairs(unknown_servers) do
+                owner:refreshEnhancedCapabilitiesAsync(server, nil, function() finishProbe() end)
+            end
+            return
+        end
+    end
+
+    if capability_probe_attempted == true then
+        local ready_items = {}
+        local unresolved = 0
+        for item_index, item in ipairs(items) do
+            local server = owner.store:getServer(item.server_id)
+            local capability_state = server and server.capabilities and server.capabilities.progress_event_timestamp
+            if server and server.enabled ~= false and capability_state == nil then
+                unresolved = unresolved + 1
+                owner.queue:updateFailure(item.server_id, item.document, nil, _("Waiting for server capability check"), {
+                    failure_count = tonumber(item.failure_count) or 0,
+                    next_retry_at = os.time() + queue_retry_delays[1],
+                    auto_retry_exhausted = false,
+                    retry_blocked = false,
+                })
+                if diagnostic_log then diagnostic_log.log("queue retry capability unresolved", server_label(server), "document", item.document) end
+            else
+                table.insert(ready_items, item)
+            end
+        end
+        items = ready_items
+        if unresolved > 0 and #items == 0 then
+            self:scheduleQueueRetry()
+            if complete_callback then complete_callback() end
+            return
+        end
+    end
+
     local retry_message
     if interactive then
         retry_message = InfoMessage:new{ text = _("Queued updates are being retried.") }
@@ -163,6 +217,30 @@ function ProgressLifecycleController:retryQueue(interactive, complete_callback, 
         if server and server.enabled ~= false then
             pending = pending + 1
             local payload = item.payload
+            if item.event_timestamp == nil then
+                local preserved_event_timestamp = tonumber(payload.event_timestamp) or tonumber(item.queued_at)
+                if preserved_event_timestamp ~= nil then
+                    item.event_timestamp = preserved_event_timestamp
+                    owner.queue:save()
+                    if diagnostic_log then diagnostic_log.log("queue event timestamp preserved", server_label(server), "event_timestamp", preserved_event_timestamp) end
+                end
+            end
+            local supports_event_timestamp = owner:serverSupportsProgressEventTimestamp(server)
+            local event_timestamp_changed = false
+            if supports_event_timestamp then
+                if payload.event_timestamp == nil and (tonumber(item.event_timestamp) ~= nil or tonumber(item.queued_at) ~= nil) then
+                    payload.event_timestamp = tonumber(item.event_timestamp) or tonumber(item.queued_at)
+                    event_timestamp_changed = true
+                    if diagnostic_log then diagnostic_log.log("queue event timestamp migrated", server_label(server), "event_timestamp", payload.event_timestamp) end
+                end
+            elseif payload.event_timestamp ~= nil then
+                payload.event_timestamp = nil
+                event_timestamp_changed = true
+            end
+            if event_timestamp_changed then
+                item.payload = payload
+                owner.queue:save()
+            end
             local strip_metadata = payload.metadata ~= nil
                 and (server.metadata_enabled == false or (server.capabilities and server.capabilities.metadata_compatible == false))
             local strip_position = payload.position ~= nil and not owner:serverSupportsRichProgress(server)
@@ -179,6 +257,7 @@ function ProgressLifecycleController:retryQueue(interactive, complete_callback, 
                     device = payload.device,
                     device_id = payload.device_id,
                 }
+                if supports_event_timestamp then sanitized.event_timestamp = payload.event_timestamp end
                 if not strip_metadata then sanitized.metadata = payload.metadata end
                 if not strip_position then sanitized.position = payload.position end
                 if not strip_book_feedback then
@@ -190,6 +269,9 @@ function ProgressLifecycleController:retryQueue(interactive, complete_callback, 
                 payload = sanitized
                 item.payload = payload
                 owner.queue:save()
+            end
+            if diagnostic_log and payload.event_timestamp ~= nil then
+                diagnostic_log.log("queue retry event timestamp", server_label(server), "event_timestamp", payload.event_timestamp)
             end
             owner:newClient(server):updateProgress(server.username, server.userkey, payload, function(ok, status, body)
                 if ok and (status == 200 or status == 202) then

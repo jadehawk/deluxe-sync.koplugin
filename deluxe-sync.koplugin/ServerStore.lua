@@ -183,6 +183,7 @@ function ServerStore:upsertServer(server)
         logical_library = nil,
         book_feedback = nil,
         book_feedback_version = nil,
+        progress_event_timestamp = nil,
         rich_progress = nil,
         rich_position_version = nil,
         device_registration = nil,

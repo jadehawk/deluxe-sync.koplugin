@@ -189,6 +189,8 @@ function EnhancedDataSyncController:cacheEnhancedCapabilities(server, enhanced_c
     local logical_supported = type(enhanced_capabilities) == "table"
         and enhanced_capabilities.logical_books == true
         and enhanced_capabilities.logical_library == true
+    local progress_event_timestamp_supported = type(enhanced_capabilities) == "table"
+        and enhanced_capabilities.progress_event_timestamp == true
     local rich_position_version = type(enhanced_capabilities) == "table" and tonumber(enhanced_capabilities.rich_position_version) or nil
     local rich_supported = type(enhanced_capabilities) == "table"
         and enhanced_capabilities.rich_progress == true
@@ -212,6 +214,7 @@ function EnhancedDataSyncController:cacheEnhancedCapabilities(server, enhanced_c
 
     owner.store:setCapability(server.id, "logical_books", logical_supported)
     owner.store:setCapability(server.id, "logical_library", logical_supported)
+    owner.store:setCapability(server.id, "progress_event_timestamp", progress_event_timestamp_supported)
     owner.store:setCapability(server.id, "rich_progress", rich_supported)
     owner.store:setCapability(server.id, "rich_position_version", rich_position_version)
     owner.store:setCapability(server.id, "device_registration", device_supported)

@@ -1,9 +1,12 @@
 # Changelog
 
-## [0.2.0.4] - 2026-09-21
+## [0.2.0.4] - 2026-09-29
 
 - Added first-class KOReader completion feedback synchronization for supported enhanced servers, including half-star ratings and the private completion review Note.
 - Added an explicit per-server **Ratings & Reviews** sharing control that is fail-closed for existing servers and rechecked before queued/retried sends.
+- Added capability-gated progress event timestamps for enhanced servers so delayed progress can be ordered by when the reading position was captured instead of when the request finally reaches the server.
+- Preserved the original progress event time through offline queues, failed online sends, metadata fallback, and manual/automatic retries. Retry now resolves an unknown timestamp capability before delivery, preventing reconnect races from making stale queued progress look newer.
+- Preserved compatibility with ordinary KOSync servers: `event_timestamp` is sent only after explicit capability confirmation, while unsupported servers continue using the standard progress payload.
 - Preserved feedback privacy and backward compatibility: unsupported servers receive no rating/review fields, and ordinary KOSync behavior is unchanged.
 
 ## [0.2.0.3] - 2026-09-20

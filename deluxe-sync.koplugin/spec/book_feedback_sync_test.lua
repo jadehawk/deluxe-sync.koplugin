@@ -37,8 +37,8 @@ assert(count(main, "self:applyBookFeedbackToPayload(server, payload, book_feedba
 contains(main, "fallback_payload.rating_present = current_payload.rating_present", "metadata fallback must preserve rating clear/value presence")
 contains(main, "fallback_payload.review_note_present = current_payload.review_note_present", "metadata fallback must preserve review clear/value presence")
 
-contains(api, '"optional_params": ["metadata", "position", "rating", "rating_present", "review_note", "review_note_present"]', "Spore API must accept feedback fields")
-contains(api, '"payload": ["document", "metadata", "position", "rating", "rating_present", "review_note", "review_note_present", "progress", "percentage", "device", "device_id"]', "Spore API must serialize feedback fields")
+contains(api, '"optional_params": ["metadata", "position", "rating", "rating_present", "review_note", "review_note_present", "event_timestamp"]', "Spore API must accept feedback fields")
+contains(api, '"payload": ["document", "metadata", "position", "rating", "rating_present", "review_note", "review_note_present", "event_timestamp", "progress", "percentage", "device", "device_id"]', "Spore API must serialize feedback fields")
 
 contains(lifecycle, "local strip_book_feedback = has_book_feedback and not owner:serverSupportsBookFeedback(server)", "queued retries must re-check current feedback consent/capability")
 contains(lifecycle, "if strip_metadata or strip_position or strip_book_feedback then", "queued retry sanitization must include feedback")

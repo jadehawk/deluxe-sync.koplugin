@@ -476,6 +476,11 @@ function ProgressSyncDeluxe:getRichPosition(progress, percentage)
     return position
 end
 
+function ProgressSyncDeluxe:serverSupportsProgressEventTimestamp(server)
+    local capabilities = server and server.capabilities or {}
+    return capabilities.progress_event_timestamp == true
+end
+
 function ProgressSyncDeluxe:serverSupportsRichProgress(server)
     local capabilities = server and server.capabilities or {}
     return capabilities.rich_progress == true
@@ -916,6 +921,7 @@ function ProgressSyncDeluxe:pushAll(interactive)
     end
     local canonical_document = self:getDocumentDigest()
     local progress, percentage = self:getCurrentProgress()
+    local progress_event_timestamp = os.time()
     local metadata = self:getMetadata()
     local rich_position = self:getRichPosition(progress, percentage)
     local book_feedback = self:getBookFeedback()
@@ -947,6 +953,10 @@ function ProgressSyncDeluxe:pushAll(interactive)
             device_id = self.store.data.device_id,
         }
         local capabilities = server.capabilities or {}
+        if self:serverSupportsProgressEventTimestamp(server) then
+            payload.event_timestamp = progress_event_timestamp
+            if DiagnosticLog then DiagnosticLog.log("progress event timestamp", serverLabel(server), "event_timestamp", progress_event_timestamp) end
+        end
         if server.metadata_enabled ~= false and capabilities.metadata_compatible ~= false then
             payload.metadata = metadata
         end
@@ -971,6 +981,7 @@ function ProgressSyncDeluxe:pushAll(interactive)
                     server_id = server.id,
                     document = document,
                     payload = failed_payload,
+                    event_timestamp = progress_event_timestamp,
                     reason = queueFailureReason(status, body),
                     last_status = status,
                     failure_count = 1,
@@ -1009,6 +1020,9 @@ function ProgressSyncDeluxe:pushAll(interactive)
                         device = current_payload.device,
                         device_id = current_payload.device_id,
                     }
+                    if self:serverSupportsProgressEventTimestamp(server) and current_payload.event_timestamp ~= nil then
+                        fallback_payload.event_timestamp = current_payload.event_timestamp
+                    end
                     if self:serverSupportsRichProgress(server) and current_payload.position ~= nil then
                         fallback_payload.position = current_payload.position
                     end
@@ -1031,6 +1045,7 @@ function ProgressSyncDeluxe:queueCurrentProgress()
     if self.preview then return end
     local canonical_document = self:getDocumentDigest()
     local progress, percentage = self:getCurrentProgress()
+    local progress_event_timestamp = os.time()
     if not canonical_document or progress == nil then return end
     local metadata = self:getMetadata()
     local rich_position = self:getRichPosition(progress, percentage)
@@ -1045,6 +1060,10 @@ function ProgressSyncDeluxe:queueCurrentProgress()
             device_id = self.store.data.device_id,
         }
         local capabilities = server.capabilities or {}
+        if self:serverSupportsProgressEventTimestamp(server) then
+            payload.event_timestamp = progress_event_timestamp
+            if DiagnosticLog then DiagnosticLog.log("progress event timestamp", serverLabel(server), "event_timestamp", progress_event_timestamp) end
+        end
         if server.metadata_enabled ~= false and capabilities.metadata_compatible ~= false then
             payload.metadata = metadata
         end
@@ -1056,6 +1075,7 @@ function ProgressSyncDeluxe:queueCurrentProgress()
             server_id = server.id,
             document = document,
             payload = payload,
+            event_timestamp = progress_event_timestamp,
             reason = _("Waiting for connection"),
         })
     end
