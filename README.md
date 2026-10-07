@@ -2,7 +2,7 @@
 
 Deluxe-Sync is a KOReader plugin that extends the built-in KOSync workflow to multiple independent KOReader-compatible servers.
 
-Current plugin version: **0.2.0.4**
+Current plugin version: **0.2.0.5**
 
 - Enhanced Techy-Notes servers can register one durable physical device using the existing Deluxe device ID plus KOReader UUID/model/platform/version metadata; unsupported KOSync servers are unchanged.
 - Enhanced servers advertising annotation sync v1 can synchronize KOReader highlights, notes, and bookmarks with stable IDs, revision conflicts, and deletion tombstones; ordinary KOSync servers receive no annotation traffic.
@@ -11,7 +11,7 @@ Current plugin version: **0.2.0.4**
 - Enhanced servers advertising settings-backup support with snapshot schema 2 can receive core-only, versioned KOReader settings snapshots. Unknown plugin-owned global settings, sensitive values, device identity, and volatile reader/session state are excluded automatically, and same-device restore still requires explicit confirmation.
 - Enhanced Techy-Notes servers can also keep a separately protected Deluxe-Sync profile for cross-device migration. It restores the same configured server URLs, usernames, preferences, and saved authentication keys so the new reader reconnects to the existing remote accounts and their already-synced progress instead of creating new accounts.
 - Cross-device Deluxe-Sync migration is reader-confirmed and revalidated immediately before apply. Protected authentication is delivered only to the specifically targeted reader, and a matching profile already present on that reader is not repeatedly offered.
-- Deluxe-Sync refreshes enhanced server capabilities on every network reconnect and polls pending restore requests before statistics/settings synchronization; server details use compact two-button action rows.
+- Deluxe-Sync refreshes enhanced server capabilities on every network reconnect and polls pending restore requests before statistics/settings synchronization; server details use compact two-button action rows. Saving a new or edited server shows immediate activity feedback, persists the settings, then automatically authenticates and refreshes capabilities; **Authenticate / Sign in** remains available for an explicit recheck.
 - Enhanced servers advertising client notices v1 can surface account or linked-service warnings on the reader after successful syncs. Warning/error notices keep a persistent attention marker on the affected server entry, while repeated display of the same notice is suppressed for 24 hours.
 
 ## Overview

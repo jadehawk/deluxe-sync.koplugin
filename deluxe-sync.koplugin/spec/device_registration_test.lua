@@ -35,6 +35,7 @@ contains(main, 'G_reader_settings:readSetting("device_id")', "KOReader UUID must
 contains(main, 'pcall(Version.getCurrentRevision, Version)', "KOReader version should be gathered safely")
 contains(main, 'legacy_device_id = tostring(self.store.data.device_id)', "legacy Deluxe identity must be preserved")
 contains(main, 'deluxe_sync_version = PLUGIN_VERSION', "Deluxe-Sync version must be registered")
+contains(main, 'vocabulary_builder = true', "device registration must advertise Vocabulary Builder support")
 contains(main, 'client:registerDevice(server.username, server.userkey, self:getDeviceRegistrationPayload()', "heartbeat must send enhanced device payload")
 contains(controller, 'owner.store:setCapability(server.id, "device_registration", device_supported)', "capability probe must cache device support")
 contains(controller, 'owner.store:setCapability(server.id, "device_registration_version", device_registration_version)', "capability probe must cache device schema version")

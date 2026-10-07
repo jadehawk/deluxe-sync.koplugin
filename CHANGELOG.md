@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.0.5] - 2026-10-07
+
+- Fixed enhanced device registration to advertise **Vocabulary Builder** support. Vocabulary synchronization and its data-sharing/server-capability checks already worked in 0.2.0.4; this corrects the client capability heartbeat so compatible servers can accurately show Vocabulary Builder in the device capability list.
+- Standard KOSync behavior and existing per-server Vocabulary Builder / Vocabulary Reading Context sharing choices are unchanged.
+- Clarified server setup and editing: new servers now expose an explicit **Save** action, saves show immediate transient progress feedback, and every successful save automatically signs in and refreshes server capabilities. The manual **Authenticate / Sign in** action remains available for an explicit credential/capability recheck and now explains that the capability probe is running.
+
 ## [0.2.0.4] - 2026-09-29
 
 - Added first-class KOReader completion feedback synchronization for supported enhanced servers, including half-star ratings and the private completion review Note.

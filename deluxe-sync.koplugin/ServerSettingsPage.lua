@@ -135,6 +135,20 @@ function ServerSettingsPage:markDirty()
     self.dirty = true
 end
 
+function ServerSettingsPage:showActivity(text, timeout)
+    UIManager:show(InfoMessage:new{ text = text, timeout = timeout or 2 })
+end
+
+function ServerSettingsPage:requestSave()
+    self:showActivity(_("Saving server…"), 1.5)
+    if self.on_save then self.on_save(self, self.draft, self.password) end
+end
+
+function ServerSettingsPage:requestAuthenticate()
+    self:showActivity(_("Signing in and checking server capabilities…"), 3)
+    if self.on_authenticate then self.on_authenticate(self, self.draft, self.password) end
+end
+
 function ServerSettingsPage:closePage()
     if self.on_back then
         self.on_back(self)
@@ -223,7 +237,7 @@ function ServerSettingsPage:headerActions()
     return {
         function() self:requestBack() end,
         function()
-            if self.on_save then self.on_save(self, self.draft, self.password) end
+            self:requestSave()
         end,
     }
 end
@@ -263,7 +277,7 @@ end
 function ServerSettingsPage:headerWidget(width, height)
     local side_width = math.floor(width * 0.25)
     local title_width = math.max(1, width - 2 * side_width)
-    local save_text = self.is_new and _("Sign in") or (self.dirty and _("Save *") or _("Close"))
+    local save_text = self.is_new and _("Save") or (self.dirty and _("Save *") or _("Close"))
     local row = HorizontalGroup:new{ align = "center" }
     table.insert(row, self:headerButton(_("‹ Servers"), side_width, height, function() self:requestBack() end, self:isHeaderFocused(1)))
     table.insert(row, CenterContainer:new{
@@ -280,7 +294,7 @@ function ServerSettingsPage:headerWidget(width, height)
             self:requestBack()
             return
         end
-        if self.on_save then self.on_save(self, self.draft, self.password) end
+        self:requestSave()
     end, self:isHeaderFocused(2)))
     return FrameContainer:new{
         width = width,
@@ -524,8 +538,8 @@ function ServerSettingsPage:actionCells()
                 { label = _("Create account"), value = "", callback = function()
                     if self.on_signup then self.on_signup(self, self.draft, self.password) end
                 end },
-                { label = _("Save / sign in"), value = "", callback = function()
-                    if self.on_save then self.on_save(self, self.draft, self.password) end
+                { label = _("Save"), value = "", callback = function()
+                    self:requestSave()
                 end },
             },
         }
@@ -567,7 +581,7 @@ function ServerSettingsPage:buildContent(body_width, cell_width, gap, cell_heigh
           end },
         { label = self.is_new and _("Save server first") or _("Authenticate / Sign in"), value = "", centered = true,
           callback = not self.is_new and function()
-            if self.on_authenticate then self.on_authenticate(self, self.draft, self.password) end
+            self:requestAuthenticate()
           end or nil, static = self.is_new },
         body_width, cell_width, gap, cell_height, visual_state)
 

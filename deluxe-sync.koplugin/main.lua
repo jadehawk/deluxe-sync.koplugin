@@ -773,6 +773,7 @@ function ProgressSyncDeluxe:getDeviceRegistrationPayload()
             annotations = true,
             reading_statistics = true,
             settings_backups = true,
+            vocabulary_builder = true,
             deluxe_profiles = true,
             deluxe_profile_restore = true,
         },
@@ -2359,11 +2360,14 @@ function ProgressSyncDeluxe:showServerSettingsPage(existing)
             local saved = saveDraft(draft, password, draft.id == nil)
             if not saved then return end
             current:applySavedServer(saved)
-            UIManager:show(InfoMessage:new{ text = _("Saved."), timeout = 1.2 })
+            UIManager:show(InfoMessage:new{ text = _("Server saved. Signing in and checking capabilities…"), timeout = 3 })
             self:testServer(saved, {
                 show_result = false,
                 on_complete = function(updated)
-                    if self.server_settings_page == current then current:applySavedServer(updated or saved) end
+                    if self.server_settings_page == current then
+                        current:applySavedServer(updated or saved)
+                        UIManager:show(InfoMessage:new{ text = _("Server saved. Signed in and capabilities refreshed."), timeout = 2 })
+                    end
                 end,
             })
         end,
