@@ -6,7 +6,11 @@ local UrlUtil = require("UrlUtil")
 
 local PROGRESS_TIMEOUTS = { 5, 20 }
 local TIGHT_FALLBACK_TIMEOUTS = { 2, 5 }
-local SYNC_FALLBACK_TIMEOUTS = { 5, 15 }
+-- Non-Turbo requests run in a forked subprocess, so they do not block the
+-- reader UI. Give LuaSec enough time for a slow server to begin responding;
+-- a 5-second block timeout can surface as `wantread` even when the server
+-- completes the request successfully a few seconds later.
+local BACKGROUND_HTTP_TIMEOUTS = { 30, 60 }
 local AUTH_TIMEOUTS = { 5, 10 }
 local BACKGROUND_POLL_INTERVAL = 0.25
 
@@ -294,7 +298,7 @@ function SyncClient:_async(method, username, userkey, params, callback, public_r
         return
     end
     local pid, parent_read_fd = ffiutil.runInSubProcess(function(unused_pid, child_write_fd)
-        socketutil:set_timeout(SYNC_FALLBACK_TIMEOUTS[1], SYNC_FALLBACK_TIMEOUTS[2])
+        socketutil:set_timeout(BACKGROUND_HTTP_TIMEOUTS[1], BACKGROUND_HTTP_TIMEOUTS[2])
         local ok, res = pcall(function() return self.client[method](self.client, params or {}) end)
         socketutil:reset_timeout()
         local result

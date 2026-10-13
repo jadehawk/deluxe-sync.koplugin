@@ -84,6 +84,12 @@ local fake_client = {
         if response_mode == "wantread" then
             error("common/Spore/Protocols.lua:85: wantread")
         end
+        if response_mode == "slow_success" then
+            local timeout = captured_timeouts[#captured_timeouts]
+            if not timeout or timeout[1] < 30 then
+                error("common/Spore/Protocols.lua:85: wantread")
+            end
+        end
         return { status = 200, body = '{"ok":true}' }
     end,
     capabilities = function()
@@ -115,24 +121,24 @@ end)
 
 assert(failure_callback_called, "background transport failure must complete the parent callback")
 assert(subprocess_count == 1, "non-Turbo transport must run through a background subprocess")
-assert(captured_timeouts[1] and captured_timeouts[1][1] == 5 and captured_timeouts[1][2] == 15,
-    "background LuaSec request must use the safer 5/15 timeout budget")
+assert(captured_timeouts[1] and captured_timeouts[1][1] == 30 and captured_timeouts[1][2] == 60,
+    "background LuaSec request must allow slow server responses with a 30/60 timeout budget")
 assert(reset_count == 1, "child socket timeout must be reset after the failed request")
 assert(scheduled_count >= 1, "background subprocess result must return through the UI scheduler")
 
-response_mode = "success"
+response_mode = "slow_success"
 local success_callback_called = false
 client:updateProgress("reader", "key", { document = "def" }, function(ok, status, body)
     success_callback_called = true
-    assert(ok == true, "successful background transport must report success")
+    assert(ok == true, "slow but successful background transport must report success")
     assert(status == 200, "successful background transport must preserve HTTP status")
     assert(body == '{"ok":true}', "successful background transport must preserve response body")
 end)
 
 assert(success_callback_called, "background transport success must complete the parent callback")
 assert(subprocess_count == 2, "each non-Turbo request must be isolated from the UI thread")
-assert(captured_timeouts[2] and captured_timeouts[2][1] == 5 and captured_timeouts[2][2] == 15,
-    "successful background LuaSec request must keep the 5/15 timeout budget")
+assert(captured_timeouts[2] and captured_timeouts[2][1] == 30 and captured_timeouts[2][2] == 60,
+    "successful background LuaSec request must keep the 30/60 timeout budget")
 assert(reset_count == 2, "child socket timeout must be reset after every request")
 
 ui_manager.looper = {}

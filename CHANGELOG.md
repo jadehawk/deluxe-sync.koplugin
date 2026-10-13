@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.0.6] - 2026-10-13
+
+- Fixed false progress-sync failures on slower servers where LuaSec surfaced wantread after the previous 5-second background block timeout even though the server continued processing and returned HTTP 200.
+- Increased only the forked background HTTP timeout budget to 30/60 seconds so slow enhanced-server progress and optional-data requests can complete without blocking the KOReader UI; the emergency synchronous fallback remains tightly bounded.
+- Added transport regression coverage for a slow-but-successful response while preserving real wantread failures for normal retry handling.
+
 ## [0.2.0.5] - 2026-10-07
 
 - Fixed enhanced device registration to advertise **Vocabulary Builder** support. Vocabulary synchronization and its data-sharing/server-capability checks already worked in 0.2.0.4; this corrects the client capability heartbeat so compatible servers can accurately show Vocabulary Builder in the device capability list.
