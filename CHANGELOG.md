@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0.7] - 2026-11-13
+
+- Switched opt-in KOReader Reading Statistics uploads to CrossPoint's per-book `POST /api/v1/stats/koreader` protocol for compatible CrossPoint and Techy-Notes servers, replacing the former Techy-Notes event endpoint.
+- Preserved ordinary KOSync progress-only compatibility. Enhanced-capability responses gate uploads; servers without a capabilities endpoint may be probed only with explicit statistics consent, and missing statistics endpoints are remembered until an explicit recheck.
+- Added per-server IANA reading time zones, full-history first upload, per-book change fingerprints, strict server acknowledgments, record/body limits, and safe handling of duplicate/updated page records and HTTP 409 history conflicts.
+- Reading statistics remain opt-in and never change reading positions or highlights.
+
 ## [0.2.0.6] - 2026-10-13
 
 - Fixed false progress-sync failures on slower servers where LuaSec surfaced wantread after the previous 5-second background block timeout even though the server continued processing and returned HTTP 200.

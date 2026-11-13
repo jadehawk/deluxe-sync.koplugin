@@ -87,6 +87,7 @@ local function defaultDraft(server)
     draft.metadata_enabled = draft.metadata_enabled ~= false
     draft.annotations_enabled = draft.annotations_enabled == true
     draft.reading_statistics_enabled = draft.reading_statistics_enabled == true
+    draft.reading_statistics_timezone = draft.reading_statistics_timezone or ""
     draft.settings_backup_enabled = draft.settings_backup_enabled == true
     draft.deluxe_config_backup_enabled = draft.deluxe_config_backup_enabled == true
     draft.vocabulary_enabled = draft.vocabulary_enabled == true
@@ -222,6 +223,9 @@ function ServerSettingsPage:toggleSharing(field)
     end
     self:markDirty()
     self:updateItems()
+    if field == "reading_statistics_enabled" and self.draft[field] and self.draft.reading_statistics_timezone == "" then
+        UIManager:show(InfoMessage:new{ text = _("Set Reading Time Zone before statistics can upload (for example America/New_York).") })
+    end
     if field == "deluxe_config_backup_enabled" and self.draft[field] then
         UIManager:show(InfoMessage:new{
             text = _("Deluxe-Sync Config Backup includes server URLs, usernames, and saved authentication keys. Enable it only for a server you trust."),
@@ -493,6 +497,13 @@ function ServerSettingsPage:sharingCells()
               callback = function() self:toggleSharing("reading_statistics_enabled") end },
         },
         {
+            { label = _("Reading Time Zone"), value = function()
+                return self.draft.reading_statistics_timezone ~= "" and self.draft.reading_statistics_timezone or _("Set time zone")
+              end,
+              callback = function() self:editTextField(_("Reading Time Zone"), "reading_statistics_timezone", "America/New_York") end },
+            { label = _("Example"), value = "America/New_York", static = true },
+        },
+        {
             { label = _("KOReader Settings Backup"), value = function() return boolText(self.draft.settings_backup_enabled) end,
               callback = function() self:toggleSharing("settings_backup_enabled") end },
             { label = _("Deluxe-Sync Config Backup"), value = function() return boolText(self.draft.deluxe_config_backup_enabled) end,
@@ -522,7 +533,9 @@ function ServerSettingsPage:capabilityCells()
         },
         {
             { label = _("Annotations"), value = capabilityText(caps.annotations), static = true },
-            { label = _("Reading Statistics"), value = capabilityText(caps.reading_statistics), static = true },
+            { label = _("Reading Statistics"), value = caps.reading_statistics == true and _("Supported")
+                or (caps.reading_statistics_probe_allowed and _("Unverified")
+                    or capabilityText(caps.reading_statistics)), static = true },
         },
         {
             { label = _("Settings Backups"), value = capabilityText(caps.settings_backups), static = true },

@@ -244,7 +244,14 @@ function SyncClient:_async(method, username, userkey, params, callback, public_r
         callback(false, nil, setup_error)
         return
     end
-    DiagnosticLog.log("http request", method, self.custom_url or "", params or {})
+    local log_params = params or {}
+    if method == "post_koreader_statistics" then
+        log_params = {
+            document = params and params.book and params.book.md5,
+            page_count = params and params.pages and #params.pages or 0,
+        }
+    end
+    DiagnosticLog.log("http request", method, self.custom_url or "", log_params)
 
     local function deliver(ok, status, body)
         if ok then
@@ -373,8 +380,8 @@ function SyncClient:putAnnotations(username, userkey, payload, callback)
     self:_async("put_annotations", username, userkey, payload, callback)
 end
 
-function SyncClient:putReadingStatistics(username, userkey, payload, callback)
-    self:_async("put_reading_statistics", username, userkey, payload, callback)
+function SyncClient:postKOReaderStatistics(username, userkey, payload, callback)
+    self:_async("post_koreader_statistics", username, userkey, payload, callback)
 end
 
 function SyncClient:putVocabulary(username, userkey, payload, callback)

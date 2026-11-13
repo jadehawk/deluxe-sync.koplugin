@@ -2,11 +2,11 @@
 
 Deluxe-Sync is a KOReader plugin that extends the built-in KOSync workflow to multiple independent KOReader-compatible servers.
 
-Current plugin version: **0.2.0.6**
+Current plugin version: **0.2.0.7**
 
 - Enhanced Techy-Notes servers can register one durable physical device using the existing Deluxe device ID plus KOReader UUID/model/platform/version metadata; unsupported KOSync servers are unchanged.
 - Enhanced servers advertising annotation sync v1 can synchronize KOReader highlights, notes, and bookmarks with stable IDs, revision conflicts, and deletion tombstones; ordinary KOSync servers receive no annotation traffic.
-- Enhanced servers advertising reading-statistics v1 can receive KOReader's existing `statistics.sqlite3` history through a read-only, resumable, deduplicated upload; Deluxe-Sync never writes to KOReader's live statistics database.
+- Servers with the KOReader statistics endpoint can receive per-book page history from `statistics.sqlite3` through `POST /api/v1/stats/koreader`. Uploads use per-book fingerprints and server acknowledgments to avoid redundant transfers; Deluxe-Sync never writes to the statistics database. A server that does not offer capability discovery is probed at most once after explicit Reading Statistics consent.
 - Enhanced servers advertising Vocabulary Builder v1 can receive read-only deltas from KOReader's existing `vocabulary_builder.sqlite3`; passage context has its own separate sharing control and is sent only when both the user and server allow it.
 - Enhanced servers advertising settings-backup support with snapshot schema 2 can receive core-only, versioned KOReader settings snapshots. Unknown plugin-owned global settings, sensitive values, device identity, and volatile reader/session state are excluded automatically, and same-device restore still requires explicit confirmation.
 - Enhanced Techy-Notes servers can also keep a separately protected Deluxe-Sync profile for cross-device migration. It restores the same configured server URLs, usernames, preferences, and saved authentication keys so the new reader reconnects to the existing remote accounts and their already-synced progress instead of creating new accounts.
@@ -31,7 +31,7 @@ Key capabilities include:
 - Per-server document matching: binary partial-MD5 by default, or KOReader-compatible filename matching using the MD5 of the basename.
 - Server-side logical-book linking on capable enhanced servers, with linked versions presented as one book while raw sync identities remain intact and reversible.
 - Capability-gated KOReader annotation sync on enhanced servers, including highlights, notes, bookmarks, offline-safe revision conflicts, and tombstones.
-- Capability-gated read-only KOReader reading-statistics upload with resumable history import and server-side deduplication.
+- Consent-gated KOReader reading-statistics upload to compatible servers, with full first-time history backfill, per-book change detection, and server-side deduplication. Set each server's **Reading Time Zone** (for example `America/New_York`) before uploading. Ordinary KOSync servers continue syncing progress without any enhanced data.
 - Capability-gated Vocabulary Builder synchronization from KOReader's existing `vocabulary_builder.sqlite3`, sending only new, changed, or deleted records after convergence. Reading-context text is shared only when the separate Vocabulary Reading Context option is enabled and the server advertises support.
 - Per-server data-sharing controls for Book Metadata, Annotations, Reading Statistics, KOReader Settings Backup, Deluxe-Sync Config Backup, Vocabulary Builder, and optional Vocabulary Reading Context, while Reading Progress remains the core always-on KOSync function.
 - Capability-gated client notices for enhanced servers, with 24-hour repeat suppression and a persistent server attention marker for warning/error notices.

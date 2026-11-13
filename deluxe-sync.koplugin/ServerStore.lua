@@ -169,6 +169,8 @@ function ServerStore:upsertServer(server)
     server.book_feedback_enabled = server.book_feedback_enabled == true
     server.annotations_enabled = server.annotations_enabled == true
     server.reading_statistics_enabled = server.reading_statistics_enabled == true
+    server.reading_statistics_timezone = type(server.reading_statistics_timezone) == "string"
+        and server.reading_statistics_timezone or ""
     server.settings_backup_enabled = server.settings_backup_enabled == true
     server.deluxe_config_backup_enabled = server.deluxe_config_backup_enabled == true
     server.vocabulary_enabled = server.vocabulary_enabled == true
@@ -193,7 +195,7 @@ function ServerStore:upsertServer(server)
         annotations_version = nil,
         reading_statistics = nil,
         reading_statistics_version = nil,
-        reading_statistics_events = nil,
+        reading_statistics_probe_allowed = nil,
         reading_statistics_direction = nil,
         settings_backups = nil,
         settings_backups_version = nil,
@@ -402,19 +404,13 @@ function ServerStore:saveAnnotationState(server_id, document, state)
 end
 
 function ServerStore:getReadingStatisticsState(server_id)
-    if not server_id then
-        return { start_time = 0, id_book = 0, page = -1, initial_complete = false }
-    end
+    if not server_id then return {} end
     self.data.reading_statistics_sync = self.data.reading_statistics_sync or {}
     local state = self.data.reading_statistics_sync[server_id]
     if type(state) ~= "table" then
-        state = { start_time = 0, id_book = 0, page = -1, initial_complete = false }
+        state = {}
         self.data.reading_statistics_sync[server_id] = state
     end
-    state.start_time = math.max(0, math.floor(tonumber(state.start_time) or 0))
-    state.id_book = math.max(0, math.floor(tonumber(state.id_book) or 0))
-    state.page = math.floor(tonumber(state.page) or -1)
-    state.initial_complete = state.initial_complete == true
     return state
 end
 

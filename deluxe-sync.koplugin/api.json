@@ -92,13 +92,12 @@
       "payload": ["document", "legacy_device_id", "device", "annotations"],
       "expected_status": [200, 400, 401, 404, 405, 422]
     },
-    "put_reading_statistics": {
-      "path": "/api/v1/statistics/events",
-      "method": "PUT",
-      "required_params": ["legacy_device_id", "events"],
-      "optional_params": ["koreader_device_id", "device", "source_type", "source_schema_version"],
-      "payload": ["legacy_device_id", "koreader_device_id", "device", "source_type", "source_schema_version", "events"],
-      "expected_status": [200, 400, 401, 404, 405, 422]
+    "post_koreader_statistics": {
+      "path": "/api/v1/stats/koreader",
+      "method": "POST",
+      "required_params": ["version", "book", "timezone", "pages"],
+      "payload": ["version", "book", "timezone", "pages"],
+      "expected_status": [200, 400, 401, 403, 404, 405, 409, 413, 422]
     },
     "put_settings_backup": {
       "path": "/api/v1/settings/backups",

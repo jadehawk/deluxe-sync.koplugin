@@ -33,7 +33,6 @@ function EnhancedDataSyncController:serverSupportsReadingStatistics(server)
     local capabilities = server and server.capabilities or {}
     local direction = capabilities.reading_statistics_direction
     return capabilities.reading_statistics == true
-        and capabilities.reading_statistics_events == true
         and (tonumber(capabilities.reading_statistics_version) or 0) >= 1
         and (direction == nil or direction == "client_to_server")
 end
@@ -41,18 +40,30 @@ end
 function EnhancedDataSyncController:cacheReadingStatisticsCapabilities(server, enhanced_capabilities)
     local owner = self.owner
     local version = type(enhanced_capabilities) == "table" and tonumber(enhanced_capabilities.reading_statistics_version) or nil
-    local events_supported = type(enhanced_capabilities) == "table" and enhanced_capabilities.reading_statistics_events == true
     local direction = type(enhanced_capabilities) == "table" and enhanced_capabilities.reading_statistics_direction or nil
     local supported = type(enhanced_capabilities) == "table"
         and enhanced_capabilities.reading_statistics == true
-        and events_supported
         and (version or 0) >= 1
         and (direction == nil or direction == "client_to_server")
-    owner.store:setCapability(server.id, "reading_statistics", supported)
+    -- A server without discovery may already have acknowledged this endpoint.
+    -- Keep that verified result, but never override an explicit negative capability.
+    local state = owner.store:getReadingStatisticsState(server.id)
+    local confirmed = type(enhanced_capabilities) ~= "table"
+        and state.protocol == "koreader_v1" and state.server_url == server.url
+        and state.username == server.username and state.probe_confirmed == true
+        and state.endpoint_unsupported ~= true
+    owner.store:setCapability(server.id, "reading_statistics", supported or confirmed)
     owner.store:setCapability(server.id, "reading_statistics_version", version)
-    owner.store:setCapability(server.id, "reading_statistics_events", events_supported)
+    owner.store:setCapability(server.id, "reading_statistics_probe_allowed", false)
     owner.store:setCapability(server.id, "reading_statistics_direction", direction)
     return supported
+end
+
+function EnhancedDataSyncController:allowKOReaderStatisticsProbe(server)
+    local state = self.owner.store:getReadingStatisticsState(server.id)
+    local blocked = state.protocol == "koreader_v1" and state.server_url == server.url
+        and state.username == server.username and state.endpoint_unsupported == true
+    self.owner.store:setCapability(server.id, "reading_statistics_probe_allowed", not blocked)
 end
 
 function EnhancedDataSyncController:refreshReadingStatisticsCapabilities(server, client)
@@ -60,8 +71,10 @@ function EnhancedDataSyncController:refreshReadingStatisticsCapabilities(server,
     client = client or owner:newClient(server)
     local ok, status, body = client:capabilities()
     local data = decode(body)
-    if ok and (status == 404 or status == 405) then
-        return self:cacheReadingStatisticsCapabilities(server, nil)
+    if status == 404 or status == 405 then
+        self:cacheReadingStatisticsCapabilities(server, nil)
+        self:allowKOReaderStatisticsProbe(server)
+        return false
     end
     if not ok or status ~= 200 or type(data) ~= "table" or type(data.capabilities) ~= "table" then
         return false
@@ -239,8 +252,9 @@ function EnhancedDataSyncController:refreshEnhancedCapabilities(server, client)
     local ok, status, body = client:capabilities()
     local data = decode(body)
 
-    if ok and (status == 404 or status == 405) then
+    if status == 404 or status == 405 then
         self:cacheEnhancedCapabilities(server, nil)
+        self:allowKOReaderStatisticsProbe(server)
         return false, status
     end
     if not ok or status ~= 200 or type(data) ~= "table" or type(data.capabilities) ~= "table" then
@@ -262,6 +276,7 @@ function EnhancedDataSyncController:refreshEnhancedCapabilitiesAsync(server, cli
         local data = decode(body)
         if status == 404 or status == 405 then
             self:cacheEnhancedCapabilities(server, nil)
+            self:allowKOReaderStatisticsProbe(server)
             callback(false, status)
             return
         end

@@ -2112,6 +2112,7 @@ function ProgressSyncDeluxe:serverFromSettingsDraft(draft, password, require_pas
         book_feedback_enabled = draft.book_feedback_enabled == true,
         annotations_enabled = draft.annotations_enabled == true,
         reading_statistics_enabled = draft.reading_statistics_enabled == true,
+        reading_statistics_timezone = draft.reading_statistics_timezone or "",
         settings_backup_enabled = draft.settings_backup_enabled == true,
         deluxe_config_backup_enabled = draft.deluxe_config_backup_enabled == true,
         vocabulary_enabled = draft.vocabulary_enabled == true,
@@ -2749,7 +2750,8 @@ function ProgressSyncDeluxe:showServerTestResult(server, listing_supported, book
         { label = _("Rich Position"), value = rich_supported and _("Supported") or _("Not Supported") },
         { label = _("Device Identity"), value = device_value },
         { label = _("Annotations"), value = annotation_supported and _("Supported") or _("Not Supported") },
-        { label = _("Reading Statistics"), value = reading_statistics_supported and _("Supported") or _("Not Supported") },
+        { label = _("Reading Statistics"), value = reading_statistics_supported and _("Supported")
+            or ((server.capabilities or {}).reading_statistics_probe_allowed and _("Unverified") or _("Not Supported")) },
         { label = _("Settings Backups"), value = settings_backup_supported and _("Supported") or _("Not Supported") },
         { label = _("Vocabulary Builder"), value = vocabulary_supported and _("Supported") or _("Not Supported") },
     })
@@ -2770,6 +2772,16 @@ function ProgressSyncDeluxe:testServer(server, options)
         if not authorized_server then return end
         server = authorized_server
     end
+    -- An explicit Sign in / Save is the user's chance to retry an endpoint
+    -- that previously returned 404/405, without probing it on every sync.
+    local statistics_state = self.store:getReadingStatisticsState(server.id)
+    if server.reading_statistics_enabled == true
+        and statistics_state.protocol == "koreader_v1"
+        and statistics_state.server_url == server.url and statistics_state.username == server.username
+        and statistics_state.endpoint_unsupported == true then
+        statistics_state.endpoint_unsupported = false
+        self.store:saveReadingStatisticsState(server.id, statistics_state)
+    end
     local recovery_ok, recovery_status, recovery_body = client:recoveryCapability()
     local recovery_data = decode(recovery_body)
     local recovery_supported = recovery_ok and recovery_status == 200 and not (type(recovery_data) == "table" and recovery_data.supported == false)
@@ -2779,6 +2791,9 @@ function ProgressSyncDeluxe:testServer(server, options)
     local capability_data = decode(capability_body)
     local enhanced_capabilities = capability_ok and capability_status == 200 and type(capability_data) == "table" and capability_data.capabilities or nil
     self:cacheEnhancedCapabilities(server, enhanced_capabilities)
+    if capability_status == 404 or capability_status == 405 then
+        self.enhanced_data_controller:allowKOReaderStatisticsProbe(server)
+    end
     server = self.store:getServer(server.id) or server
     local cached_capabilities = server.capabilities or {}
     local logical_supported = cached_capabilities.logical_books == true and cached_capabilities.logical_library == true
